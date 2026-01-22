@@ -6,10 +6,8 @@
 replicaCount: 1
 
 # Container image configuration
-image:
-  repository: ghcr.io/labring/state-metrics
-  pullPolicy: IfNotPresent
-  tag: ""  # Overrides the image tag whose default is the chart appVersion
+image: ghcr.io/labring/state-metrics:latest
+imagePullPolicy: IfNotPresent
 
 imagePullSecrets: []
 

@@ -65,6 +65,5 @@ Create the name of the service account to use
 Return the proper image name
 */}}
 {{- define "state-metrics.image" -}}
-{{- $tag := .Values.image.tag | default .Chart.AppVersion }}
-{{- printf "%s:%s" .Values.image.repository $tag }}
+{{- .Values.image }}
 {{- end }}
