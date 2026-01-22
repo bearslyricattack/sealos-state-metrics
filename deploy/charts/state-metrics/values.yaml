@@ -216,6 +216,31 @@ config:
     # Check interval
     checkInterval: "30s"
 
+  # Cloud balance collector configuration
+  # NOTE: This collector requires leader election to avoid duplicate API calls
+  # Ensure leaderElection.enabled is set to true when using this collector
+  cloudbalance:
+    enabled: false
+    # Check interval
+    checkInterval: "5m"
+    # Cloud accounts to monitor
+    accounts: []
+      # - provider: alicloud
+      #   accountId: "123456"
+      #   accessKeyId: "YOUR_ACCESS_KEY_ID"
+      #   accessKeySecret: "YOUR_ACCESS_KEY_SECRET"
+      #   regionId: "cn-hangzhou"
+      # - provider: tencentcloud
+      #   accountId: "987654"
+      #   accessKeyId: "YOUR_SECRET_ID"
+      #   accessKeySecret: "YOUR_SECRET_KEY"
+      #   regionId: "ap-guangzhou"
+      # - provider: volcengine
+      #   accountId: "111222"
+      #   accessKeyId: "YOUR_ACCESS_KEY_ID"
+      #   accessKeySecret: "YOUR_ACCESS_KEY_SECRET"
+      #   regionId: "cn-beijing"
+
 # Extra environment variables
 env: {}
   # EXAMPLE_VAR: "value"

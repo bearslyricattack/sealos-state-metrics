@@ -17,8 +17,19 @@ require (
 )
 
 require (
+	github.com/alibabacloud-go/alibabacloud-gateway-spi v0.0.4 // indirect
+	github.com/alibabacloud-go/bssopenapi-20171214 v1.0.8 // indirect
+	github.com/alibabacloud-go/darabonba-openapi v0.2.1 // indirect
+	github.com/alibabacloud-go/debug v1.0.0 // indirect
+	github.com/alibabacloud-go/endpoint-util v1.1.0 // indirect
+	github.com/alibabacloud-go/openapi-util v0.0.11 // indirect
+	github.com/alibabacloud-go/tea v1.4.0 // indirect
+	github.com/alibabacloud-go/tea-utils v1.4.3 // indirect
+	github.com/alibabacloud-go/tea-xml v1.1.2 // indirect
+	github.com/aliyun/credentials-go v1.1.2 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
+	github.com/clbanning/mxj/v2 v2.7.0 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/emicklei/go-restful/v3 v3.11.0 // indirect
 	github.com/fxamacker/cbor/v2 v2.7.0 // indirect
@@ -32,6 +43,7 @@ require (
 	github.com/google/go-cmp v0.6.0 // indirect
 	github.com/google/gofuzz v1.2.0 // indirect
 	github.com/google/uuid v1.6.0 // indirect
+	github.com/jmespath/go-jmespath v0.4.0 // indirect
 	github.com/josharian/intern v1.0.0 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
 	github.com/klauspost/compress v1.17.9 // indirect
@@ -44,6 +56,11 @@ require (
 	github.com/prometheus/common v0.55.0 // indirect
 	github.com/prometheus/procfs v0.15.1 // indirect
 	github.com/spf13/pflag v1.0.5 // indirect
+	github.com/tencentcloud/tencentcloud-sdk-go/tencentcloud/billing v1.3.34 // indirect
+	github.com/tencentcloud/tencentcloud-sdk-go/tencentcloud/common v1.3.36 // indirect
+	github.com/tjfoc/gmsm v1.3.2 // indirect
+	github.com/volcengine/volc-sdk-golang v1.0.23 // indirect
+	github.com/volcengine/volcengine-go-sdk v1.2.8 // indirect
 	github.com/x448/float16 v0.8.4 // indirect
 	golang.org/x/net v0.30.0 // indirect
 	golang.org/x/oauth2 v0.23.0 // indirect
@@ -54,6 +71,8 @@ require (
 	google.golang.org/protobuf v1.35.1 // indirect
 	gopkg.in/evanphx/json-patch.v4 v4.12.0 // indirect
 	gopkg.in/inf.v0 v0.9.1 // indirect
+	gopkg.in/ini.v1 v1.56.0 // indirect
+	gopkg.in/yaml.v2 v2.4.0 // indirect
 	k8s.io/klog/v2 v2.130.1 // indirect
 	k8s.io/kube-openapi v0.0.0-20241105132330-32ad38e42d3f // indirect
 	k8s.io/utils v0.0.0-20241104100929-3ea5e8cea738 // indirect

@@ -30,7 +30,7 @@ type Server struct {
 }
 
 // NewServer creates a new server instance
-func NewServer(cfg *config.GlobalConfig, configFile string) (*Server, error) {
+func NewServer(cfg *config.GlobalConfig, configPath string) (*Server, error) {
 	var (
 		configContent []byte
 		err           error
@@ -38,8 +38,8 @@ func NewServer(cfg *config.GlobalConfig, configFile string) (*Server, error) {
 
 	// Read config file content if provided
 
-	if configFile != "" {
-		configContent, err = os.ReadFile(configFile)
+	if configPath != "" {
+		configContent, err = os.ReadFile(configPath)
 		if err != nil {
 			return nil, fmt.Errorf("failed to read config file: %w", err)
 		}
@@ -83,26 +83,24 @@ func (s *Server) Run(ctx context.Context) error {
 	promCollector := registry.NewPrometheusCollector(s.registry)
 	s.promRegistry.MustRegister(promCollector)
 
-	// Always start collectors that don't require leader election
-	log.Info("Starting collectors that don't require leader election")
-	// Get all collectors
-	allCollectors := s.registry.ListCollectors()
-	for _, name := range allCollectors {
-		if c, ok := s.registry.GetCollector(name); ok {
-			if !c.RequiresLeaderElection() {
-				if err := c.Start(ctx); err != nil {
-					log.WithError(err).
-						WithField("name", name).
-						Error("Failed to start non-leader collector")
-				} else {
-					log.WithField("name", name).Info("Non-leader collector started")
+	// Setup leader election if enabled
+	if s.config.LeaderElection.Enabled {
+		// When leader election is enabled, start collectors that don't require it immediately
+		log.Info("Starting collectors that don't require leader election")
+		allCollectors := s.registry.ListCollectors()
+		for _, name := range allCollectors {
+			if c, ok := s.registry.GetCollector(name); ok {
+				if !c.RequiresLeaderElection() {
+					if err := c.Start(ctx); err != nil {
+						log.WithError(err).
+							WithField("name", name).
+							Error("Failed to start non-leader collector")
+					} else {
+						log.WithField("name", name).Info("Non-leader collector started")
+					}
 				}
 			}
 		}
-	}
-
-	// Setup leader election if enabled
-	if s.config.LeaderElection.Enabled {
 		leConfig := &leaderelection.Config{
 			Namespace:     s.config.LeaderElection.Namespace,
 			LeaseName:     s.config.LeaderElection.LeaseName,

@@ -31,8 +31,8 @@ func main() {
 	}
 
 	// Load configuration from YAML if specified
-	if cfg.ConfigFile != "" {
-		if err := config.LoadFromYAML(cfg.ConfigFile, cfg); err != nil {
+	if cfg.ConfigPath != "" {
+		if err := config.LoadFromYAML(cfg.ConfigPath, cfg); err != nil {
 			ctx.Fatalf("Failed to load config from YAML: %v", err)
 		}
 	}
@@ -63,7 +63,7 @@ func main() {
 	// Create and run server
 	appCtx := context.Background()
 
-	server, err := app.NewServer(cfg, cfg.ConfigFile)
+	server, err := app.NewServer(cfg, cfg.ConfigPath)
 	if err != nil {
 		log.WithError(err).Error("Failed to create server")
 		os.Exit(1)

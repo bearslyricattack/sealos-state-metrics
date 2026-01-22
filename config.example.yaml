@@ -1,0 +1,201 @@
+# Sealos State Metric Configuration Example
+# This is a complete example showing all available configuration options
+
+# Server configuration
+server:
+  address: ":9090"
+  metricsPath: "/metrics"
+  healthPath: "/health"
+
+# Kubernetes client configuration
+kubernetes:
+  # Path to kubeconfig file (empty for in-cluster config)
+  kubeconfig: ""
+  # Kubernetes client QPS limit
+  qps: 50
+  # Kubernetes client burst limit
+  burst: 100
+
+# Metrics configuration
+metrics:
+  namespace: "sealos"
+
+# Leader election configuration
+leaderElection:
+  # Enable leader election (useful for deployment mode with multiple replicas)
+  enabled: true
+  # Namespace for leader election lease (empty uses current namespace)
+  namespace: ""
+  # Name of the leader election lease
+  leaseName: "state-metrics"
+  # Leader election lease duration
+  leaseDuration: "15s"
+  # Leader election renew deadline
+  renewDeadline: "10s"
+  # Leader election retry period
+  retryPeriod: "2s"
+
+# Logging configuration
+logging:
+  # Log level: debug, info, warn, error
+  level: "info"
+  # Log format: json, text
+  format: "json"
+  # Enable debug mode
+  debug: false
+
+# Performance tuning
+performance:
+  # Kubernetes informer resync period
+  informerResyncPeriod: "10m"
+  # Number of worker goroutines
+  workers: 10
+  # Metrics update interval
+  metricsUpdateInterval: "1m"
+
+# List of enabled collectors
+# Available collectors: domain, node, pod, imagepull, zombie, cloudbalance
+enabledCollectors:
+  - domain
+  - node
+  - pod
+  - imagepull
+  - zombie
+  # - cloudbalance  # Disabled by default
+
+# Instance identity (optional, defaults to POD_NAME env var, IP, hostname, or random ID)
+# identity: "custom-instance-id"
+
+# ============================================================================
+# Collector-specific configurations
+# ============================================================================
+
+collectors:
+  # Domain collector - monitors domain health
+  domain:
+    # List of domains to monitor
+    domains:
+      - example.com
+      - api.example.com
+      - www.example.com
+    # Check timeout for each domain
+    checkTimeout: "5s"
+    # Check interval (how often to check all domains)
+    checkInterval: "5m"
+    # Include TLS certificate validation
+    includeCertCheck: true
+    # Include HTTP connectivity check
+    includeHTTPCheck: true
+
+  # Node collector - monitors Kubernetes node conditions
+  node:
+    # No configuration required
+    # Automatically monitors all nodes in the cluster
+
+  # Pod collector - monitors container restarts
+  pod:
+    # List of namespaces to monitor (empty = all namespaces)
+    namespaces: []
+      # - default
+      # - kube-system
+      # - production
+    # Minimum restart count to report (only containers with restarts >= threshold)
+    restartThreshold: 5
+
+  # ImagePull collector - monitors image pull performance
+  imagepull:
+    # Threshold for slow image pulls (pulls taking longer than this are reported)
+    slowPullThreshold: "5m"
+
+  # Zombie collector - detects zombie processes
+  zombie:
+    # Check interval for scanning zombie processes
+    checkInterval: "30s"
+
+  # CloudBalance collector - monitors cloud account balances
+  # WARNING: Store credentials securely! Use Kubernetes Secrets in production.
+  # NOTE: This collector requires leader election to avoid duplicate API calls
+  # Ensure leaderElection.enabled is set to true when using this collector
+  cloudbalance:
+    # Check interval for querying cloud balances
+    checkInterval: "5m"
+    # Cloud accounts to monitor
+    accounts:
+      # Alibaba Cloud example
+      - provider: alicloud
+        accountId: "aliyun-prod-account"
+        accessKeyId: "LTAI5t..."
+        accessKeySecret: "your-secret-here"
+        regionId: "cn-hangzhou"
+
+      # Tencent Cloud example
+      - provider: tencentcloud
+        accountId: "tencent-prod-account"
+        accessKeyId: "AKID..."
+        accessKeySecret: "your-secret-here"
+        regionId: "ap-guangzhou"
+
+      # VolcEngine example
+      - provider: volcengine
+        accountId: "volcengine-prod-account"
+        accessKeyId: "AKLT..."
+        accessKeySecret: "your-secret-here"
+        regionId: "cn-beijing"
+
+# ============================================================================
+# Environment Variable Overrides
+# ============================================================================
+# All configuration can be overridden using environment variables with specific prefixes:
+#
+# Global config: Use prefix matching the config section
+#   SERVER_ADDRESS=:8080
+#   LOGGING_LEVEL=debug
+#   LEADER_ELECTION_ENABLED=false
+#
+# Collector config: Use prefix COLLECTORS_<COLLECTOR>_
+#   COLLECTORS_DOMAIN_CHECK_INTERVAL=10m
+#   COLLECTORS_DOMAIN_DOMAINS=example.com,test.com
+#   COLLECTORS_POD_RESTART_THRESHOLD=10
+#   COLLECTORS_ZOMBIE_CHECK_INTERVAL=1m
+#
+# For arrays, use comma-separated values:
+#   COLLECTORS_DOMAIN_DOMAINS=domain1.com,domain2.com,domain3.com
+#   COLLECTORS_POD_NAMESPACES=default,kube-system
+#
+# ============================================================================
+
+# ============================================================================
+# Security Best Practices
+# ============================================================================
+# 1. Store sensitive credentials in Kubernetes Secrets:
+#    kubectl create secret generic cloud-credentials \
+#      --from-file=config.yaml=config.yaml
+#
+# 2. Use RBAC to limit access to metrics endpoint
+#
+# 3. Enable TLS for metrics endpoint in production
+#
+# 4. Rotate cloud provider credentials regularly
+#
+# 5. Use least-privilege IAM policies for cloud accounts
+#
+# 6. Monitor failed authentication attempts
+#
+# ============================================================================
+
+# ============================================================================
+# Deployment Modes
+# ============================================================================
+# DaemonSet (default, recommended):
+#   - Runs one pod per node
+#   - Best for node-level monitoring (zombie collector)
+#   - No leader election required
+#   - Set: deploymentMode=daemonset in Helm values
+#
+# Deployment (with replicas):
+#   - Runs N replicas
+#   - Useful when leader election is enabled
+#   - Better for HA setup
+#   - Set: deploymentMode=deployment, replicaCount=3 in Helm values
+#
+# ============================================================================

@@ -17,7 +17,7 @@ import (
 // Module-specific configs are managed by each module independently
 type GlobalConfig struct {
 	// Configuration files
-	ConfigFile string `yaml:"-" short:"c" help:"Path to configuration file (YAML format)" type:"path"`
+	ConfigPath string `yaml:"-" short:"c" help:"Path to configuration file (YAML format)" type:"path"`
 	EnvFile    string `yaml:"-" help:"Path to .env file for environment variables" default:".env" type:"path"`
 
 	// Server configuration
@@ -121,14 +121,14 @@ func ParseEnv(cfg *GlobalConfig) error {
 
 // ConfigLoader loads configuration from multiple sources with proper precedence
 type ConfigLoader struct {
-	configFile string
+	configPath string
 	envFile    string
 }
 
 // NewConfigLoader creates a new configuration loader
-func NewConfigLoader(configFile, envFile string) *ConfigLoader {
+func NewConfigLoader(configPath, envFile string) *ConfigLoader {
 	return &ConfigLoader{
-		configFile: configFile,
+		configPath: configPath,
 		envFile:    envFile,
 	}
 }
@@ -153,7 +153,7 @@ func (l *ConfigLoader) Load() (*GlobalConfig, error) {
 	}
 
 	// Step 3: Load from YAML config file if specified
-	if l.configFile != "" {
+	if l.configPath != "" {
 		if err := l.loadFromYAML(cfg); err != nil {
 			return nil, fmt.Errorf("failed to load config from YAML: %w", err)
 		}
@@ -175,7 +175,7 @@ func (l *ConfigLoader) Load() (*GlobalConfig, error) {
 
 // loadFromYAML loads configuration from YAML file
 func (l *ConfigLoader) loadFromYAML(cfg *GlobalConfig) error {
-	data, err := os.ReadFile(l.configFile)
+	data, err := os.ReadFile(l.configPath)
 	if err != nil {
 		return fmt.Errorf("failed to read config file: %w", err)
 	}
@@ -184,7 +184,7 @@ func (l *ConfigLoader) loadFromYAML(cfg *GlobalConfig) error {
 		return fmt.Errorf("failed to unmarshal YAML: %w", err)
 	}
 
-	log.WithField("file", l.configFile).Info("Configuration loaded from YAML")
+	log.WithField("file", l.configPath).Info("Configuration loaded from YAML")
 
 	return nil
 }
