@@ -1,0 +1,9 @@
+**/.vscode
+**/__debug_bin*
+**/.DS_Store
+**/IMPLEMENTATION_PLAN.md
+sealos-state-metric
+sealos-state-metric.*
+**/*.local
+**/*.local.*
+

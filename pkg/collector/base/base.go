@@ -1,0 +1,183 @@
+package base
+
+import (
+	"context"
+	"fmt"
+	"sync"
+	"sync/atomic"
+
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/zijiren233/sealos-state-metric/pkg/collector"
+	"k8s.io/klog/v2"
+)
+
+// BaseCollector provides common functionality for all collectors.
+// It implements the basic lifecycle management and state tracking.
+type BaseCollector struct {
+	name                   string
+	collectorType          collector.CollectorType
+	requiresLeaderElection bool
+
+	mu            sync.RWMutex
+	started       atomic.Bool
+	ctx           context.Context
+	cancel        context.CancelFunc
+
+	// Metrics registry
+	descs         []*prometheus.Desc
+
+	// Collector-specific collect function
+	collectFunc   func(ch chan<- prometheus.Metric)
+}
+
+// NewBaseCollector creates a new BaseCollector instance.
+// By default, collectors require leader election (requiresLeaderElection = true).
+func NewBaseCollector(name string, collectorType collector.CollectorType) *BaseCollector {
+	return &BaseCollector{
+		name:                   name,
+		collectorType:          collectorType,
+		requiresLeaderElection: true, // Default: require leader election
+		descs:                  make([]*prometheus.Desc, 0),
+	}
+}
+
+// NewBaseCollectorWithLeaderElection creates a new BaseCollector with custom leader election requirement
+func NewBaseCollectorWithLeaderElection(name string, collectorType collector.CollectorType, requiresLeaderElection bool) *BaseCollector {
+	return &BaseCollector{
+		name:                   name,
+		collectorType:          collectorType,
+		requiresLeaderElection: requiresLeaderElection,
+		descs:                  make([]*prometheus.Desc, 0),
+	}
+}
+
+// Name returns the collector name
+func (b *BaseCollector) Name() string {
+	return b.name
+}
+
+// Type returns the collector type
+func (b *BaseCollector) Type() collector.CollectorType {
+	return b.collectorType
+}
+
+// RequiresLeaderElection returns whether this collector requires leader election
+func (b *BaseCollector) RequiresLeaderElection() bool {
+	return b.requiresLeaderElection
+}
+
+// SetRequiresLeaderElection sets whether this collector requires leader election
+func (b *BaseCollector) SetRequiresLeaderElection(requires bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.requiresLeaderElection = requires
+}
+
+// Start initializes the collector context
+func (b *BaseCollector) Start(ctx context.Context) error {
+	if b.started.Load() {
+		return fmt.Errorf("collector %s already started", b.name)
+	}
+
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	b.ctx, b.cancel = context.WithCancel(ctx)
+	b.started.Store(true)
+
+	klog.InfoS("Collector started", "name", b.name, "type", b.collectorType)
+	return nil
+}
+
+// Stop gracefully stops the collector
+func (b *BaseCollector) Stop() error {
+	if !b.started.Load() {
+		return fmt.Errorf("collector %s not started", b.name)
+	}
+
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	if b.cancel != nil {
+		b.cancel()
+	}
+	b.started.Store(false)
+
+	klog.InfoS("Collector stopped", "name", b.name)
+	return nil
+}
+
+// IsStarted returns whether the collector is started
+func (b *BaseCollector) IsStarted() bool {
+	return b.started.Load()
+}
+
+// Context returns the collector's context
+func (b *BaseCollector) Context() context.Context {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	return b.ctx
+}
+
+// Health performs a basic health check
+func (b *BaseCollector) Health() error {
+	if !b.started.Load() {
+		return fmt.Errorf("collector %s not running", b.name)
+	}
+
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+
+	if b.ctx == nil {
+		return fmt.Errorf("collector %s has nil context", b.name)
+	}
+
+	select {
+	case <-b.ctx.Done():
+		return fmt.Errorf("collector %s context cancelled", b.name)
+	default:
+		return nil
+	}
+}
+
+// RegisterDesc registers a prometheus descriptor
+func (b *BaseCollector) RegisterDesc(desc *prometheus.Desc) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.descs = append(b.descs, desc)
+}
+
+// Describe sends all descriptors to the channel
+func (b *BaseCollector) Describe(ch chan<- *prometheus.Desc) {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+
+	for _, desc := range b.descs {
+		ch <- desc
+	}
+}
+
+// SetCollectFunc sets the function to be called during metric collection
+func (b *BaseCollector) SetCollectFunc(f func(ch chan<- prometheus.Metric)) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.collectFunc = f
+}
+
+// Collect calls the collector-specific collect function
+func (b *BaseCollector) Collect(ch chan<- prometheus.Metric) {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+
+	if b.collectFunc != nil {
+		b.collectFunc(ch)
+	}
+}
+
+// MustRegisterDesc registers a descriptor and panics on error
+func (b *BaseCollector) MustRegisterDesc(desc *prometheus.Desc) {
+	if desc == nil {
+		panic(fmt.Sprintf("collector %s: cannot register nil descriptor", b.name))
+	}
+	b.RegisterDesc(desc)
+}

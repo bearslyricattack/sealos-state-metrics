@@ -1,0 +1,283 @@
+package registry
+
+import (
+	"context"
+	"fmt"
+	"sync"
+	"time"
+
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/zijiren233/sealos-state-metric/pkg/collector"
+	"github.com/zijiren233/sealos-state-metric/pkg/config"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/klog/v2"
+)
+
+var (
+	// globalRegistry is the singleton instance of the collector registry
+	globalRegistry *Registry
+	once           sync.Once
+)
+
+// Registry manages the lifecycle of all collectors.
+// It follows the node_exporter pattern with a factory-based registration system.
+type Registry struct {
+	mu         sync.RWMutex
+	factories  map[string]collector.Factory
+	collectors map[string]collector.Collector
+}
+
+// GetRegistry returns the singleton registry instance
+func GetRegistry() *Registry {
+	once.Do(func() {
+		globalRegistry = &Registry{
+			factories:  make(map[string]collector.Factory),
+			collectors: make(map[string]collector.Collector),
+		}
+	})
+	return globalRegistry
+}
+
+// Register registers a collector factory with the given name.
+// This function is typically called from init() functions in collector packages.
+func Register(name string, factory collector.Factory) {
+	registry := GetRegistry()
+	registry.mu.Lock()
+	defer registry.mu.Unlock()
+
+	if _, exists := registry.factories[name]; exists {
+		klog.Warningf("Collector factory %s already registered, overwriting", name)
+	}
+
+	registry.factories[name] = factory
+	klog.V(4).InfoS("Collector factory registered", "name", name)
+}
+
+// MustRegister is like Register but panics if registration fails
+func MustRegister(name string, factory collector.Factory) {
+	if name == "" {
+		panic("collector name cannot be empty")
+	}
+	if factory == nil {
+		panic(fmt.Sprintf("collector factory for %s cannot be nil", name))
+	}
+	Register(name, factory)
+}
+
+// Initialize creates collector instances for the specified collectors.
+// It should be called once during application startup.
+func (r *Registry) Initialize(
+	ctx context.Context,
+	client kubernetes.Interface,
+	configFile string,
+	metricsNamespace string,
+	informerResyncPeriod time.Duration,
+	enabledCollectors []string,
+) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if len(r.collectors) > 0 {
+		return fmt.Errorf("registry already initialized")
+	}
+
+	klog.InfoS("Initializing collectors", "enabled", enabledCollectors)
+
+	// Create module config loader with pipe mode: file -> env
+	// ConfigLoader is never nil - use NullLoader as fallback
+	// The pipe ensures configuration priority: defaults < file < env variables
+	configLoader := config.NewWrapConfigLoader()
+
+	// Add file loader if config file is provided
+	if configFile != "" {
+		configLoader.Add(config.NewModuleConfigLoader(configFile))
+	}
+
+	// Always add env loader (highest priority)
+	configLoader.Add(config.NewEnvConfigLoader())
+
+	// Create FactoryContext
+	factoryCtx := &collector.FactoryContext{
+		Ctx:                  ctx,
+		Client:               client,
+		ConfigLoader:         configLoader,
+		MetricsNamespace:     metricsNamespace,
+		InformerResyncPeriod: informerResyncPeriod,
+	}
+
+	for _, name := range enabledCollectors {
+		factory, exists := r.factories[name]
+		if !exists {
+			klog.Warningf("Collector factory not found: %s", name)
+			continue
+		}
+
+		c, err := factory(factoryCtx)
+		if err != nil {
+			klog.V(4).InfoS("Collector not enabled", "name", name, "error", err)
+			continue
+		}
+
+		r.collectors[name] = c
+		klog.InfoS("Collector initialized", "name", name, "type", c.Type())
+	}
+
+	return nil
+}
+
+// Start starts all registered collectors
+func (r *Registry) Start(ctx context.Context) error {
+	return r.StartWithLeaderElection(ctx, false)
+}
+
+// StartWithLeaderElection starts collectors based on leader election requirement.
+// If leaderOnly is true, only starts collectors that require leader election.
+// If leaderOnly is false, starts all collectors.
+func (r *Registry) StartWithLeaderElection(ctx context.Context, leaderOnly bool) error {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	if len(r.collectors) == 0 {
+		klog.Warning("No collectors to start")
+		return nil
+	}
+
+	var toStart []string
+	for name, c := range r.collectors {
+		if !leaderOnly || c.RequiresLeaderElection() {
+			toStart = append(toStart, name)
+		}
+	}
+
+	klog.InfoS("Starting collectors", "count", len(toStart), "leaderOnly", leaderOnly)
+
+	var errs []error
+	for _, name := range toStart {
+		c := r.collectors[name]
+		if err := c.Start(ctx); err != nil {
+			errs = append(errs, fmt.Errorf("failed to start collector %s: %w", name, err))
+			klog.ErrorS(err, "Failed to start collector", "name", name)
+		} else {
+			klog.InfoS(
+				"Collector started",
+				"name",
+				name,
+				"requiresLeaderElection",
+				c.RequiresLeaderElection(),
+			)
+		}
+	}
+
+	if len(errs) > 0 {
+		return fmt.Errorf("failed to start %d collector(s): %v", len(errs), errs)
+	}
+
+	return nil
+}
+
+// Stop stops all registered collectors
+func (r *Registry) Stop() error {
+	return r.StopWithLeaderElection(false)
+}
+
+// StopWithLeaderElection stops collectors based on leader election requirement.
+// If leaderOnly is true, only stops collectors that require leader election.
+// If leaderOnly is false, stops all collectors.
+func (r *Registry) StopWithLeaderElection(leaderOnly bool) error {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	if len(r.collectors) == 0 {
+		return nil
+	}
+
+	var toStop []string
+	for name, c := range r.collectors {
+		if !leaderOnly || c.RequiresLeaderElection() {
+			toStop = append(toStop, name)
+		}
+	}
+
+	klog.InfoS("Stopping collectors", "count", len(toStop), "leaderOnly", leaderOnly)
+
+	var errs []error
+	for _, name := range toStop {
+		c := r.collectors[name]
+		if err := c.Stop(); err != nil {
+			errs = append(errs, fmt.Errorf("failed to stop collector %s: %w", name, err))
+			klog.ErrorS(err, "Failed to stop collector", "name", name)
+		}
+	}
+
+	if len(errs) > 0 {
+		return fmt.Errorf("failed to stop %d collector(s): %v", len(errs), errs)
+	}
+
+	return nil
+}
+
+// GetCollector returns a collector by name
+func (r *Registry) GetCollector(name string) (collector.Collector, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	c, exists := r.collectors[name]
+	return c, exists
+}
+
+// ListCollectors returns the names of all registered collectors
+func (r *Registry) ListCollectors() []string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	names := make([]string, 0, len(r.collectors))
+	for name := range r.collectors {
+		names = append(names, name)
+	}
+	return names
+}
+
+// HealthCheck performs health checks on all collectors
+func (r *Registry) HealthCheck() map[string]error {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	results := make(map[string]error)
+	for name, c := range r.collectors {
+		results[name] = c.Health()
+	}
+	return results
+}
+
+// PrometheusCollector wraps the registry as a prometheus.Collector.
+// This allows all collectors to be registered with a single Prometheus registry.
+type PrometheusCollector struct {
+	registry *Registry
+}
+
+// NewPrometheusCollector creates a new PrometheusCollector
+func NewPrometheusCollector(registry *Registry) *PrometheusCollector {
+	return &PrometheusCollector{
+		registry: registry,
+	}
+}
+
+// Describe implements prometheus.Collector
+func (pc *PrometheusCollector) Describe(ch chan<- *prometheus.Desc) {
+	pc.registry.mu.RLock()
+	defer pc.registry.mu.RUnlock()
+
+	for _, c := range pc.registry.collectors {
+		c.Describe(ch)
+	}
+}
+
+// Collect implements prometheus.Collector
+func (pc *PrometheusCollector) Collect(ch chan<- prometheus.Metric) {
+	pc.registry.mu.RLock()
+	defer pc.registry.mu.RUnlock()
+
+	for _, c := range pc.registry.collectors {
+		c.Collect(ch)
+	}
+}

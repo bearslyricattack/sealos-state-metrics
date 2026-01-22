@@ -1,0 +1,98 @@
+package util
+
+import (
+	"context"
+	"crypto/tls"
+	"fmt"
+	"net/http"
+	"time"
+)
+
+// HTTPCheckResult contains the result of an HTTP check
+type HTTPCheckResult struct {
+	Success      bool
+	ResponseTime time.Duration
+	StatusCode   int
+	Error        string
+}
+
+// CheckHTTP performs an HTTP/HTTPS health check
+func CheckHTTP(ctx context.Context, url string, timeout time.Duration) *HTTPCheckResult {
+	client := &http.Client{
+		Timeout: timeout,
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{
+				InsecureSkipVerify: false,
+			},
+		},
+	}
+
+	start := time.Now()
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return &HTTPCheckResult{
+			Success: false,
+			Error:   fmt.Sprintf("failed to create request: %v", err),
+		}
+	}
+
+	resp, err := client.Do(req)
+	responseTime := time.Since(start)
+
+	if err != nil {
+		return &HTTPCheckResult{
+			Success:      false,
+			ResponseTime: responseTime,
+			Error:        fmt.Sprintf("request failed: %v", err),
+		}
+	}
+	defer resp.Body.Close()
+
+	return &HTTPCheckResult{
+		Success:      resp.StatusCode >= 200 && resp.StatusCode < 500,
+		ResponseTime: responseTime,
+		StatusCode:   resp.StatusCode,
+	}
+}
+
+// GetTLSCert retrieves the TLS certificate from a domain
+func GetTLSCert(domain string, timeout time.Duration) (*CertInfo, error) {
+	dialer := &tls.Dialer{
+		Config: &tls.Config{
+			InsecureSkipVerify: false,
+		},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	conn, err := dialer.DialContext(ctx, "tcp", domain+":443")
+	if err != nil {
+		return nil, fmt.Errorf("failed to dial: %w", err)
+	}
+	defer conn.Close()
+
+	tlsConn, ok := conn.(*tls.Conn)
+	if !ok {
+		return nil, fmt.Errorf("not a TLS connection")
+	}
+
+	state := tlsConn.ConnectionState()
+	if len(state.PeerCertificates) == 0 {
+		return nil, fmt.Errorf("no certificates found")
+	}
+
+	cert := state.PeerCertificates[0]
+	now := time.Now()
+	expiresIn := cert.NotAfter.Sub(now)
+	isValid := now.After(cert.NotBefore) && now.Before(cert.NotAfter)
+
+	return &CertInfo{
+		CommonName: cert.Subject.CommonName,
+		Issuer:     cert.Issuer.CommonName,
+		NotBefore:  cert.NotBefore,
+		NotAfter:   cert.NotAfter,
+		ExpiresIn:  expiresIn,
+		IsValid:    isValid,
+	}, nil
+}
