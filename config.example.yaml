@@ -16,6 +16,19 @@ server:
   auth:
     enabled: false
 
+# Debug server configuration (hot-reloadable, no authentication)
+# Binds to 127.0.0.1 for local-only access
+debugServer:
+  enabled: true
+  port: 8080
+  metricsPath: "/metrics"
+  healthPath: "/health"
+
+# Pprof server configuration (hot-reloadable, binds to 127.0.0.1 only)
+pprof:
+  enabled: false
+  port: 6060
+
 # Kubernetes client configuration
 kubernetes:
   # Path to kubeconfig file (empty for in-cluster config)

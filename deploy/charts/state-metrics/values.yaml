@@ -50,6 +50,7 @@ auth:
     - name: prometheus-kube-prometheus-prometheus
       namespace: monitoring
     # VictoriaMetrics Operator k8s-stack (vm namespace)
+    # kubectl auth can-i get /metrics --as=system:serviceaccount:vm:vmagent-victoria-metrics-k8s-stack
     - name: vmagent-victoria-metrics-k8s-stack
       namespace: vm
     - name: vmalert-victoria-metrics-k8s-stack
@@ -87,10 +88,10 @@ config:
     metricsPath: "/metrics"
     healthPath: "/health"
 
-  # Debug server configuration (hot-reloadable, no authentication)
+  # Debug server configuration (hot-reloadable, no authentication, binds to 127.0.0.1)
   debugServer:
     enabled: true
-    address: ":8080"
+    port: 8080
     metricsPath: "/metrics"
     healthPath: "/health"
 

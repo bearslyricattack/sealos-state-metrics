@@ -120,7 +120,7 @@ func (c AuthConfig) Equal(other AuthConfig) bool {
 // This config is hot-reloadable
 type DebugServerConfig struct {
 	Enabled     bool   `yaml:"enabled"     name:"enabled"      env:"ENABLED"      default:"true"     help:"Enable debug server for internal access (no auth)"`
-	Address     string `yaml:"address"     name:"address"      env:"ADDRESS"      default:":8080"    help:"Debug server listen address"`
+	Port        int    `yaml:"port"        name:"port"         env:"PORT"         default:"8080"     help:"Debug server port (binds to 127.0.0.1)"`
 	MetricsPath string `yaml:"metricsPath" name:"metrics-path" env:"METRICS_PATH" default:"/metrics" help:"Metrics endpoint path for debug server"`
 	HealthPath  string `yaml:"healthPath"  name:"health-path"  env:"HEALTH_PATH"  default:"/health"  help:"Health check endpoint path for debug server"`
 }
@@ -128,7 +128,7 @@ type DebugServerConfig struct {
 // Equal checks if two DebugServerConfig are equal
 func (c DebugServerConfig) Equal(other DebugServerConfig) bool {
 	return c.Enabled == other.Enabled &&
-		c.Address == other.Address &&
+		c.Port == other.Port &&
 		c.MetricsPath == other.MetricsPath &&
 		c.HealthPath == other.HealthPath
 }

@@ -134,7 +134,7 @@ func (s *Server) Serve() error {
 	// Start debug server if enabled
 	if s.config.DebugServer.Enabled {
 		s.debugServer = httpserver.New(httpserver.Config{
-			Address: s.config.DebugServer.Address,
+			Address: fmt.Sprintf("127.0.0.1:%d", s.config.DebugServer.Port),
 			Handler: s.createDebugHandler(),
 			Name:    "debug",
 		})
