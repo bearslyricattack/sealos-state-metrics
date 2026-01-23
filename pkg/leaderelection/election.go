@@ -8,7 +8,6 @@ import (
 	"time"
 
 	log "github.com/sirupsen/logrus"
-	"github.com/zijiren233/sealos-state-metric/pkg/identity"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/leaderelection"
@@ -61,6 +60,10 @@ func NewLeaderElector(
 		return nil, errors.New("config cannot be nil")
 	}
 
+	if cfg.Identity == "" {
+		return nil, errors.New("identity cannot be empty")
+	}
+
 	if client == nil {
 		return nil, errors.New("client cannot be nil")
 	}
@@ -68,9 +71,6 @@ func NewLeaderElector(
 	if logger == nil {
 		logger = log.WithField("component", "leader-election")
 	}
-
-	// Use global identity with config override support
-	cfg.Identity = identity.GetWithConfig(cfg.Identity)
 
 	logger.WithFields(log.Fields{
 		"namespace": cfg.Namespace,

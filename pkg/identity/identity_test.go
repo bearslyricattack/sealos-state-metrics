@@ -31,15 +31,27 @@ func TestGetWithConfig(t *testing.T) {
 	t.Setenv("POD_NAME", "test-pod-456")
 
 	// Test with explicit config
-	id := GetWithConfig("explicit-config")
+	id := GetWithConfig("explicit-config", "", "")
 	if id != "explicit-config" {
 		t.Errorf("Expected 'explicit-config', got '%s'", id)
 	}
 
+	// Test with nodeName (should take priority over podName)
+	id2 := GetWithConfig("", "test-node", "test-pod")
+	if id2 != "test-node" {
+		t.Errorf("Expected 'test-node', got '%s'", id2)
+	}
+
+	// Test with podName only
+	id3 := GetWithConfig("", "", "test-pod")
+	if id3 != "test-pod" {
+		t.Errorf("Expected 'test-pod', got '%s'", id3)
+	}
+
 	// Test with empty config (should fall back to global)
-	id2 := GetWithConfig("")
-	if id2 != "test-pod-456" {
-		t.Errorf("Expected 'test-pod-456', got '%s'", id2)
+	id4 := GetWithConfig("", "", "")
+	if id4 != "test-pod-456" {
+		t.Errorf("Expected 'test-pod-456', got '%s'", id4)
 	}
 }
 

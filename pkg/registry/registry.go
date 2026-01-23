@@ -85,10 +85,12 @@ type InitConfig struct {
 	RestConfig           *rest.Config
 	Client               kubernetes.Interface
 	ConfigContent        []byte
+	Identity             string
+	NodeName             string
+	PodName              string
 	MetricsNamespace     string
 	InformerResyncPeriod time.Duration
 	EnabledCollectors    []string
-	Identity             string
 }
 
 // Initialize creates collector instances for the specified collectors.
@@ -132,8 +134,8 @@ func (r *Registry) Reinitialize(cfg *InitConfig) error {
 func (r *Registry) createCollectors(cfg *InitConfig, action string) {
 	logger := log.WithField("module", "registry")
 
-	// Set instance identity
-	r.instance = identity.GetWithConfig(cfg.Identity)
+	// Set instance identity (priority: config > NodeName > PodName > auto-detected)
+	r.instance = identity.GetWithConfig(cfg.Identity, cfg.NodeName, cfg.PodName)
 
 	logger.WithFields(log.Fields{
 		"enabled":  cfg.EnabledCollectors,
@@ -161,6 +163,9 @@ func (r *Registry) createCollectors(cfg *InitConfig, action string) {
 			RestConfig:           cfg.RestConfig,
 			Client:               cfg.Client,
 			ConfigLoader:         configLoader,
+			Identity:             cfg.Identity,
+			NodeName:             cfg.NodeName,
+			PodName:              cfg.PodName,
 			MetricsNamespace:     cfg.MetricsNamespace,
 			InformerResyncPeriod: cfg.InformerResyncPeriod,
 			Logger:               logger.WithField("collector", name),

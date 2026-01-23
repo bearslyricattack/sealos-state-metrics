@@ -23,33 +23,49 @@ func Get() string {
 	return instance
 }
 
-// GetWithConfig returns the instance identity, using the provided config if not empty.
-// If config is empty, falls back to the global identity.
-func GetWithConfig(configIdentity string) string {
+// GetWithConfig returns the instance identity with configuration override.
+// Priority: configIdentity > nodeName > podName > auto-detected (POD_NAME env > IP > hostname > random)
+func GetWithConfig(configIdentity, nodeName, podName string) string {
 	if configIdentity != "" {
 		return configIdentity
 	}
+
+	// Try NODE_NAME first (for DaemonSet deployments)
+	if nodeName != "" {
+		return nodeName
+	}
+
+	// Try POD_NAME parameter
+	if podName != "" {
+		return podName
+	}
+
 	return Get()
 }
 
 // compute determines the instance identity from environment or system
 func compute() string {
-	// Priority 1: POD_NAME environment variable
+	// Priority 1: NODE_NAME environment variable (for DaemonSet)
+	if nodeName := os.Getenv("NODE_NAME"); nodeName != "" {
+		return nodeName
+	}
+
+	// Priority 2: POD_NAME environment variable
 	if podName := os.Getenv("POD_NAME"); podName != "" {
 		return podName
 	}
 
-	// Priority 2: First non-loopback IP address
+	// Priority 3: First non-loopback IP address
 	if ip := getOutboundIP(); ip != "" {
 		return ip
 	}
 
-	// Priority 3: Hostname
+	// Priority 4: Hostname
 	if hostname, err := os.Hostname(); err == nil && hostname != "" {
 		return hostname
 	}
 
-	// Priority 4: Random identifier
+	// Priority 5: Random identifier
 	return generateRandomID()
 }
 

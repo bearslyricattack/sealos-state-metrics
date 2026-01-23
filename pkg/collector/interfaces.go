@@ -95,6 +95,9 @@ type FactoryContext struct {
 	ConfigLoader ConfigLoader // Loader for module-specific configuration (never nil, use NullLoader as fallback)
 
 	// Global configs that all collectors might need
+	Identity             string // Instance identity (defaults to NodeName > PodName > auto-detected)
+	NodeName             string // Node name for node-level collectors (from NODE_NAME env var)
+	PodName              string // Pod name (from POD_NAME env var)
 	MetricsNamespace     string
 	InformerResyncPeriod time.Duration
 

@@ -26,6 +26,11 @@ func NewCollector(factoryCtx *collector.FactoryContext) (collector.Collector, er
 			Debug("Failed to load lvm collector config, using defaults")
 	}
 
+	// 3. Use global NodeName if not set in collector config
+	if cfg.NodeName == "" {
+		cfg.NodeName = factoryCtx.NodeName
+	}
+
 	c := &Collector{
 		BaseCollector: base.NewBaseCollector(
 			collectorName,

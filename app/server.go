@@ -136,10 +136,12 @@ func (s *Server) buildInitConfig() *registry.InitConfig {
 		RestConfig:           s.restConfig,
 		Client:               s.client,
 		ConfigContent:        s.configContent,
+		Identity:             s.config.Identity,
+		NodeName:             s.config.NodeName,
+		PodName:              s.config.PodName,
 		MetricsNamespace:     s.config.Metrics.Namespace,
 		InformerResyncPeriod: s.config.Performance.InformerResyncPeriod,
 		EnabledCollectors:    s.config.EnabledCollectors,
-		Identity:             s.config.Identity,
 	}
 }
 

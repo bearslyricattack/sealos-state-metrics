@@ -42,8 +42,14 @@ type GlobalConfig struct {
 	// Enabled collectors (list of collector names)
 	EnabledCollectors []string `yaml:"enabledCollectors" help:"Comma-separated list of enabled collectors" default:"domain,node,pod,imagepull,zombie" env:"ENABLED_COLLECTORS" sep:","`
 
-	// Instance identity (optional, defaults to POD_NAME env var, IP, hostname, or random ID)
+	// Instance identity (optional, defaults to NodeName, POD_NAME, IP, hostname, or random ID)
 	Identity string `yaml:"identity" help:"Instance identity (overrides auto-detection)" env:"IDENTITY"`
+
+	// Node name (typically set via downward API for DaemonSet deployments)
+	NodeName string `yaml:"nodeName" help:"Node name (for node-level collectors)" env:"NODE_NAME"`
+
+	// Pod name (typically set via downward API)
+	PodName string `yaml:"podName" help:"Pod name" env:"POD_NAME"`
 }
 
 // ApplyHotReload applies hot-reloadable fields from newConfig
@@ -55,6 +61,8 @@ func (c *GlobalConfig) ApplyHotReload(newConfig *GlobalConfig) {
 	c.Performance = newConfig.Performance
 	c.EnabledCollectors = newConfig.EnabledCollectors
 	c.Identity = newConfig.Identity
+	c.NodeName = newConfig.NodeName
+	c.PodName = newConfig.PodName
 }
 
 // ServerConfig contains HTTP server configuration
