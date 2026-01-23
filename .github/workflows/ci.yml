@@ -24,7 +24,7 @@ concurrency:
 
 jobs:
   golangci-lint:
-    name: Lint AI Proxy
+    name: Lint and Test
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout
