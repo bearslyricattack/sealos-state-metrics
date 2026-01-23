@@ -70,7 +70,12 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	// Start config reloader
+	// Initialize server first (this may take several seconds)
+	if err := server.Init(ctx); err != nil {
+		log.WithError(err).Fatal("Failed to initialize server")
+	}
+
+	// Start config reloader AFTER server is fully initialized
 	if reloader != nil {
 		if err := reloader.Start(ctx); err != nil {
 			log.WithError(err).Fatal("Failed to start config reloader")
@@ -84,8 +89,8 @@ func main() {
 		log.WithField("config_path", cfg.ConfigPath).Info("Configuration hot reload enabled")
 	}
 
-	// Run server (blocks until context is cancelled or error)
-	if err := server.Run(ctx); err != nil {
+	// Start HTTP server and wait (blocks until context is cancelled or error)
+	if err := server.Serve(); err != nil {
 		log.WithError(err).Fatal("Server exited with error")
 	}
 

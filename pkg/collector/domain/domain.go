@@ -121,7 +121,7 @@ func (c *Collector) pollLoop(ctx context.Context) {
 	_ = c.Poll(ctx)
 
 	// Mark as ready after first poll completes
-	c.SetReady(true)
+	c.SetReady()
 
 	for {
 		select {

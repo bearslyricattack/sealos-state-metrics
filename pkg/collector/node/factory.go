@@ -99,7 +99,7 @@ func NewCollector(factoryCtx *collector.FactoryContext) (collector.Collector, er
 
 			c.logger.Info("Node collector started successfully")
 
-			c.SetReady(true)
+			c.SetReady()
 
 			return nil
 		},

@@ -51,7 +51,7 @@ func (c *Collector) Interval() time.Duration {
 func (c *Collector) pollLoop(ctx context.Context) {
 	// Initial poll
 	_ = c.Poll(ctx)
-	c.SetReady(true)
+	c.SetReady()
 
 	ticker := time.NewTicker(c.config.CheckInterval)
 	defer ticker.Stop()

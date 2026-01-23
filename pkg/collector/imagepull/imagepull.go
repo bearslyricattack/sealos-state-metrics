@@ -89,7 +89,7 @@ func (c *Collector) handlePodAdd(ctx context.Context, obj any) {
 }
 
 // handlePodUpdate handles pod update events
-func (c *Collector) handlePodUpdate(ctx context.Context, oldObj, newObj any) {
+func (c *Collector) handlePodUpdate(ctx context.Context, _, newObj any) {
 	pod := newObj.(*corev1.Pod) //nolint:errcheck // Type assertion is safe from informer
 	c.processPod(ctx, pod)
 }

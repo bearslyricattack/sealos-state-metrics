@@ -4,12 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"maps"
 	"sync"
 	"time"
 
-	"github.com/prometheus/client_golang/prometheus"
-	dto "github.com/prometheus/client_model/go"
 	log "github.com/sirupsen/logrus"
 	"github.com/zijiren233/sealos-state-metric/pkg/collector"
 	"github.com/zijiren233/sealos-state-metric/pkg/config"
@@ -111,21 +108,18 @@ func (r *Registry) Initialize(cfg *InitConfig) error {
 
 // Reinitialize reinitializes all collectors with new configuration.
 // This is used for configuration hot-reloading.
+// IMPORTANT: Caller must ensure all collectors are stopped before calling this method.
+// This method will clear the collectors map and create new collector instances.
+//
+// Note: After this method returns, collectors are created but NOT started.
+// Caller should immediately call Start/StartNonLeaderCollectors/StartLeaderCollectors
+// to start them. To avoid the gap between Reinitialize and Start, consider using
+// ReinitializeAndStart instead.
 func (r *Registry) Reinitialize(cfg *InitConfig) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	logger := log.WithField("module", "registry")
-
-	// Stop all existing collectors
-	for name, c := range r.collectors {
-		if err := c.Stop(); err != nil {
-			logger.WithError(err).WithField("name", name).
-				Error("Failed to stop collector during reinitialization")
-		}
-	}
-
-	// Clear collectors map
+	// Clear collectors map (assumes all collectors are already stopped by caller)
 	r.collectors = make(map[string]collector.Collector)
 
 	r.createCollectors(cfg, "Reinitializing")
@@ -188,13 +182,26 @@ func (r *Registry) createCollectors(cfg *InitConfig, action string) {
 
 // Start starts all registered collectors
 func (r *Registry) Start(ctx context.Context) error {
-	return r.StartWithLeaderElection(ctx, false)
+	return r.startCollectors(ctx, nil)
 }
 
-// StartWithLeaderElection starts collectors based on leader election requirement.
-// If leaderOnly is true, only starts collectors that require leader election.
-// If leaderOnly is false, starts all collectors.
-func (r *Registry) StartWithLeaderElection(ctx context.Context, leaderOnly bool) error {
+// StartNonLeaderCollectors starts only collectors that do NOT require leader election
+func (r *Registry) StartNonLeaderCollectors(ctx context.Context) error {
+	requireLeader := false
+	return r.startCollectors(ctx, &requireLeader)
+}
+
+// StartLeaderCollectors starts only collectors that require leader election
+func (r *Registry) StartLeaderCollectors(ctx context.Context) error {
+	requireLeader := true
+	return r.startCollectors(ctx, &requireLeader)
+}
+
+// startCollectors starts collectors based on leader election filter.
+// - If requireLeader is nil, starts all collectors
+// - If requireLeader is false, starts only non-leader collectors
+// - If requireLeader is true, starts only leader collectors
+func (r *Registry) startCollectors(ctx context.Context, requireLeader *bool) error {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
@@ -207,14 +214,29 @@ func (r *Registry) StartWithLeaderElection(ctx context.Context, leaderOnly bool)
 
 	var toStart []string
 	for name, c := range r.collectors {
-		if !leaderOnly || c.RequiresLeaderElection() {
+		// Filter based on leader election requirement
+		if requireLeader == nil {
+			// Start all collectors
+			toStart = append(toStart, name)
+		} else if *requireLeader == c.RequiresLeaderElection() {
+			// Start only matching collectors
 			toStart = append(toStart, name)
 		}
 	}
 
+	var filterDesc string
+	switch {
+	case requireLeader == nil:
+		filterDesc = "all"
+	case *requireLeader:
+		filterDesc = "leader-required"
+	default:
+		filterDesc = "non-leader"
+	}
+
 	logger.WithFields(log.Fields{
-		"count":      len(toStart),
-		"leaderOnly": leaderOnly,
+		"count":  len(toStart),
+		"filter": filterDesc,
 	}).Info("Starting collectors")
 
 	var errs []error
@@ -240,13 +262,34 @@ func (r *Registry) StartWithLeaderElection(ctx context.Context, leaderOnly bool)
 
 // Stop stops all registered collectors
 func (r *Registry) Stop() error {
-	return r.StopWithLeaderElection(false)
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	logger := log.WithField("module", "registry")
+
+	if len(r.collectors) == 0 {
+		return nil
+	}
+
+	logger.WithField("count", len(r.collectors)).Info("Stopping all collectors")
+
+	var errs []error
+	for name, c := range r.collectors {
+		if err := c.Stop(); err != nil {
+			errs = append(errs, fmt.Errorf("failed to stop collector %s: %w", name, err))
+			logger.WithError(err).WithField("name", name).Error("Failed to stop collector")
+		}
+	}
+
+	if len(errs) > 0 {
+		return fmt.Errorf("failed to stop %d collector(s): %v", len(errs), errs)
+	}
+
+	return nil
 }
 
-// StopWithLeaderElection stops collectors based on leader election requirement.
-// If leaderOnly is true, only stops collectors that require leader election.
-// If leaderOnly is false, stops all collectors.
-func (r *Registry) StopWithLeaderElection(leaderOnly bool) error {
+// StopLeaderCollectors stops only collectors that require leader election
+func (r *Registry) StopLeaderCollectors() error {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
@@ -258,15 +301,50 @@ func (r *Registry) StopWithLeaderElection(leaderOnly bool) error {
 
 	var toStop []string
 	for name, c := range r.collectors {
-		if !leaderOnly || c.RequiresLeaderElection() {
+		if c.RequiresLeaderElection() {
+			toStop = append(toStop, name)
+		}
+	}
+
+	logger.WithField("count", len(toStop)).Info("Stopping leader collectors")
+
+	var errs []error
+	for _, name := range toStop {
+		c := r.collectors[name]
+		if err := c.Stop(); err != nil {
+			errs = append(errs, fmt.Errorf("failed to stop collector %s: %w", name, err))
+			logger.WithError(err).WithField("name", name).Error("Failed to stop collector")
+		}
+	}
+
+	if len(errs) > 0 {
+		return fmt.Errorf("failed to stop %d collector(s): %v", len(errs), errs)
+	}
+
+	return nil
+}
+
+// StopNonLeaderCollectors stops only collectors that do not require leader election
+func (r *Registry) StopNonLeaderCollectors() error {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	logger := log.WithField("module", "registry")
+
+	if len(r.collectors) == 0 {
+		return nil
+	}
+
+	var toStop []string
+	for name, c := range r.collectors {
+		if !c.RequiresLeaderElection() {
 			toStop = append(toStop, name)
 		}
 	}
 
 	logger.WithFields(log.Fields{
-		"count":      len(toStop),
-		"leaderOnly": leaderOnly,
-	}).Info("Stopping collectors")
+		"count": len(toStop),
+	}).Info("Stopping non-leader collectors")
 
 	var errs []error
 	for _, name := range toStop {
@@ -318,246 +396,4 @@ func (r *Registry) HealthCheck() map[string]error {
 	}
 
 	return results
-}
-
-// collectorResult holds the result of a collector execution
-type collectorResult struct {
-	name     string
-	duration time.Duration
-	success  bool
-}
-
-// PrometheusCollector wraps the registry as a prometheus.Collector.
-// This allows all collectors to be registered with a single Prometheus registry.
-type PrometheusCollector struct {
-	registry *Registry
-
-	// Duration metrics
-	collectorDuration *prometheus.Desc
-	collectorSuccess  *prometheus.Desc
-}
-
-// NewPrometheusCollector creates a new PrometheusCollector
-func NewPrometheusCollector(registry *Registry) *PrometheusCollector {
-	return &PrometheusCollector{
-		registry: registry,
-		collectorDuration: prometheus.NewDesc(
-			"sealos_state_metric_collector_duration_seconds",
-			"Duration of collector scrape in seconds",
-			[]string{"collector", "instance"},
-			nil,
-		),
-		collectorSuccess: prometheus.NewDesc(
-			"sealos_state_metric_collector_success",
-			"Whether collector scrape was successful (1=success, 0=failure)",
-			[]string{"collector", "instance"},
-			nil,
-		),
-	}
-}
-
-// getInstance returns the current instance identity from the registry
-// This is called on each collect to ensure the instance is always up-to-date after reloads
-func (pc *PrometheusCollector) getInstance() string {
-	pc.registry.mu.RLock()
-	defer pc.registry.mu.RUnlock()
-	return pc.registry.instance
-}
-
-// Describe implements prometheus.Collector
-func (pc *PrometheusCollector) Describe(ch chan<- *prometheus.Desc) {
-	pc.registry.mu.RLock()
-
-	collectors := make([]collector.Collector, 0, len(pc.registry.collectors))
-	for _, c := range pc.registry.collectors {
-		collectors = append(collectors, c)
-	}
-
-	pc.registry.mu.RUnlock()
-
-	// Describe our own metrics
-	ch <- pc.collectorDuration
-
-	ch <- pc.collectorSuccess
-
-	// Describe all collectors concurrently
-	var wg sync.WaitGroup
-	for _, c := range collectors {
-		wg.Add(1)
-
-		go func(col collector.Collector) {
-			defer wg.Done()
-
-			col.Describe(ch)
-		}(c)
-	}
-
-	wg.Wait()
-}
-
-// collectFromCollector executes a single collector and returns the result
-func collectFromCollector(
-	name string,
-	col collector.Collector,
-	ch chan<- prometheus.Metric,
-	logger *log.Entry,
-) collectorResult {
-	start := time.Now()
-	success := true
-
-	// Collect metrics with panic recovery
-	func() {
-		defer func() {
-			if r := recover(); r != nil {
-				logger.WithFields(log.Fields{
-					"collector": name,
-					"panic":     r,
-				}).Error("Collector panicked during collection")
-
-				success = false
-			}
-		}()
-
-		col.Collect(ch)
-	}()
-
-	duration := time.Since(start)
-
-	// Log slow collectors
-	if duration > slowCollectorThreshold {
-		logger.WithFields(log.Fields{
-			"collector": name,
-			"duration":  duration,
-		}).Warn("Slow collector detected")
-	}
-
-	return collectorResult{
-		name:     name,
-		duration: duration,
-		success:  success,
-	}
-}
-
-// emitCollectorMetrics emits duration and success metrics for collectors
-func (pc *PrometheusCollector) emitCollectorMetrics(
-	results []collectorResult,
-	ch chan<- prometheus.Metric,
-) {
-	instance := pc.getInstance()
-	for _, result := range results {
-		ch <- prometheus.MustNewConstMetric(
-			pc.collectorDuration,
-			prometheus.GaugeValue,
-			result.duration.Seconds(),
-			result.name,
-			instance,
-		)
-
-		successValue := 0.0
-		if result.success {
-			successValue = 1.0
-		}
-
-		ch <- prometheus.MustNewConstMetric(
-			pc.collectorSuccess,
-			prometheus.GaugeValue,
-			successValue,
-			result.name,
-			instance,
-		)
-	}
-}
-
-// Collect implements prometheus.Collector
-func (pc *PrometheusCollector) Collect(ch chan<- prometheus.Metric) {
-	// Copy collectors map and instance to reduce lock contention
-	pc.registry.mu.RLock()
-	collectors := maps.Clone(pc.registry.collectors)
-	instance := pc.registry.instance
-	pc.registry.mu.RUnlock()
-
-	logger := log.WithField("module", "registry")
-
-	// Setup metric wrapper if instance is configured
-	metricCh := ch
-	var wrapperWg sync.WaitGroup
-	if instance != "" {
-		wrapperCh := make(chan prometheus.Metric, 100)
-		metricCh = wrapperCh
-
-		wrapperWg.Go(func() {
-			wrapMetricsWithInstance(wrapperCh, ch, instance)
-		})
-	}
-
-	// Collect from all collectors concurrently
-	var collectWg sync.WaitGroup
-	resultCh := make(chan collectorResult, len(collectors))
-
-	for name, c := range collectors {
-		collectWg.Go(func() {
-			result := collectFromCollector(name, c, metricCh, logger)
-			resultCh <- result
-		})
-	}
-
-	// Wait for all collectors to finish
-	collectWg.Wait()
-	close(resultCh)
-
-	// If wrapper is running, close wrapper channel and wait for it
-	if instance != "" {
-		close(metricCh)
-		wrapperWg.Wait()
-	}
-
-	// Collect results and emit performance metrics
-	results := make([]collectorResult, 0, len(collectors))
-	for result := range resultCh {
-		results = append(results, result)
-	}
-
-	pc.emitCollectorMetrics(results, ch)
-}
-
-// wrapMetricsWithInstance wraps metrics by adding instance label
-func wrapMetricsWithInstance(
-	source <-chan prometheus.Metric,
-	dest chan<- prometheus.Metric,
-	instance string,
-) {
-	for metric := range source {
-		wrappedMetric := &metricWithInstance{
-			Metric:   metric,
-			instance: instance,
-		}
-		dest <- wrappedMetric
-	}
-}
-
-// metricWithInstance wraps a prometheus.Metric and adds instance label
-type metricWithInstance struct {
-	prometheus.Metric
-	instance string
-}
-
-// Write implements prometheus.Metric by adding instance label
-func (m *metricWithInstance) Write(out *dto.Metric) error {
-	// First, write the original metric
-	if err := m.Metric.Write(out); err != nil {
-		return err
-	}
-
-	// Add instance label
-	out.Label = append(out.Label, &dto.LabelPair{
-		Name:  stringPtr("instance"),
-		Value: stringPtr(m.instance),
-	})
-
-	return nil
-}
-
-// stringPtr returns a pointer to the given string
-func stringPtr(s string) *string {
-	return &s
 }

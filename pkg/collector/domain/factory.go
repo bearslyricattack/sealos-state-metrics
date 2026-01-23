@@ -53,6 +53,7 @@ func NewCollector(factoryCtx *collector.FactoryContext) (collector.Collector, er
 		StartFunc: func(ctx context.Context) error {
 			// Start polling goroutine
 			go c.pollLoop(ctx)
+
 			c.logger.Info("Domain collector started successfully")
 			return nil
 		},

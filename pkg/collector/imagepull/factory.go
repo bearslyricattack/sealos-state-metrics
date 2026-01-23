@@ -62,8 +62,8 @@ func NewCollector(factoryCtx *collector.FactoryContext) (collector.Collector, er
 			c.podInformer = factory.Core().V1().Pods().Informer()
 			//nolint:errcheck // AddEventHandler returns (registration, error) but error is always nil in client-go
 			c.podInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
-				AddFunc:    func(obj interface{}) { c.handlePodAdd(ctx, obj) },
-				UpdateFunc: func(oldObj, newObj interface{}) { c.handlePodUpdate(ctx, oldObj, newObj) },
+				AddFunc:    func(obj any) { c.handlePodAdd(ctx, obj) },
+				UpdateFunc: func(oldObj, newObj any) { c.handlePodUpdate(ctx, oldObj, newObj) },
 				DeleteFunc: c.handlePodDelete,
 			})
 
@@ -79,7 +79,7 @@ func NewCollector(factoryCtx *collector.FactoryContext) (collector.Collector, er
 
 			c.logger.Info("ImagePull collector started successfully")
 
-			c.SetReady(true)
+			c.SetReady()
 
 			return nil
 		},

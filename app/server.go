@@ -30,7 +30,7 @@ type Server struct {
 	leaderElector *leaderelection.LeaderElector
 
 	// Fields needed for reinitialization
-	mu sync.Mutex
+	mu sync.RWMutex // Protects reload operations; readers (Collect) use RLock, writers (Reload) use Lock
 	//nolint:containedctx // Context stored for reload functionality
 	serverCtx  context.Context
 	restConfig *rest.Config
@@ -40,6 +40,32 @@ type Server struct {
 	leCtxCancel context.CancelFunc
 	leDoneCh    chan struct{} // Closed when leader election goroutine exits
 	leMu        sync.Mutex
+}
+
+// ReloadAwareCollector wraps a prometheus.Collector and blocks operations during reload
+type ReloadAwareCollector struct {
+	server *Server
+	inner  prometheus.Collector
+}
+
+// Describe implements prometheus.Collector
+func (rc *ReloadAwareCollector) Describe(ch chan<- *prometheus.Desc) {
+	// Hold server read lock - allows concurrent describes but blocks during reload
+	rc.server.mu.RLock()
+	defer rc.server.mu.RUnlock()
+
+	// Delegate to inner collector
+	rc.inner.Describe(ch)
+}
+
+// Collect implements prometheus.Collector
+func (rc *ReloadAwareCollector) Collect(ch chan<- prometheus.Metric) {
+	// Hold server read lock - allows concurrent collection but blocks during reload
+	rc.server.mu.RLock()
+	defer rc.server.mu.RUnlock()
+
+	// Delegate to inner collector
+	rc.inner.Collect(ch)
 }
 
 // NewServer creates a new server instance
@@ -55,17 +81,16 @@ func NewServer(cfg *config.GlobalConfig, configContent []byte) *Server {
 // Run starts the server and blocks until it receives a shutdown signal
 func (s *Server) Run(ctx context.Context) error {
 	// Initialize server
-	if err := s.init(ctx); err != nil {
+	if err := s.Init(ctx); err != nil {
 		return fmt.Errorf("failed to initialize server: %w", err)
 	}
 	// Start HTTP server and wait for shutdown
-	return s.serveAndWait()
+	return s.Serve()
 }
 
-func (s *Server) init(ctx context.Context) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
+// Init initializes the server (Kubernetes client, collectors, HTTP server)
+// This method is exported to allow external control of initialization timing
+func (s *Server) Init(ctx context.Context) error {
 	s.serverCtx = ctx
 
 	// Initialize Kubernetes client and collectors
@@ -77,10 +102,17 @@ func (s *Server) init(ctx context.Context) error {
 		return fmt.Errorf("failed to initialize collectors: %w", err)
 	}
 
-	// Register collectors with Prometheus
-	s.promRegistry.MustRegister(registry.NewPrometheusCollector(s.registry))
+	// Register collectors with Prometheus wrapped by ReloadAwareCollector
+	// This ensures metrics collection is blocked during reload operations
+	innerCollector := registry.NewPrometheusCollector(s.registry)
+	wrappedCollector := &ReloadAwareCollector{
+		server: s,
+		inner:  innerCollector,
+	}
+	s.promRegistry.MustRegister(wrappedCollector)
 
 	// Start collectors (with or without leader election)
+	// Note: This may take several seconds waiting for informer cache sync
 	return s.startCollectors()
 }
 
@@ -124,7 +156,9 @@ func (s *Server) buildLeaderElectionConfig() *leaderelection.Config {
 }
 
 // serveAndWait starts the HTTP server and waits for context cancellation
-func (s *Server) serveAndWait() error {
+// Serve starts the HTTP server and blocks until shutdown
+// This method is exported to allow external control of server start timing
+func (s *Server) Serve() error {
 	mux := http.NewServeMux()
 	s.setupRoutes(mux)
 
@@ -161,12 +195,53 @@ func (s *Server) startCollectors() error {
 	}
 
 	// Start non-leader collectors immediately
-	if err := s.registry.StartWithLeaderElection(s.serverCtx, false); err != nil {
+	if err := s.registry.StartNonLeaderCollectors(s.serverCtx); err != nil {
 		log.WithError(err).Warn("Some non-leader collectors failed to start")
 	}
 
 	// Setup leader election
 	return s.setupLeaderElection()
+}
+
+// stopCollectors stops all collectors based on current leader election configuration
+func (s *Server) stopCollectors() error {
+	logger := log.WithField("component", "server")
+
+	if s.config.LeaderElection.Enabled {
+		// Current state: leader election is enabled
+		// Stop leader election first (will trigger OnStoppedLeading callback to stop leader collectors)
+		s.stopLeaderElection()
+		// Then stop non-leader collectors
+		if err := s.registry.StopNonLeaderCollectors(); err != nil {
+			logger.WithError(err).Warn("Failed to stop non-leader collectors")
+			return err
+		}
+	} else {
+		// Current state: leader election is disabled
+		// All collectors were started without leader election, stop them all
+		if err := s.registry.Stop(); err != nil {
+			logger.WithError(err).Warn("Failed to stop collectors")
+			return err
+		}
+	}
+
+	return nil
+}
+
+// reinitializeAndStartCollectors reinitializes collectors and sets up leader election.
+// IMPORTANT: Caller (Reload) must hold s.mu lock.
+func (s *Server) reinitializeAndStartCollectors() error {
+	// Reinitialize collectors (creates new collector instances)
+	if err := s.registry.Reinitialize(s.buildInitConfig()); err != nil {
+		return fmt.Errorf("failed to reinitialize collectors: %w", err)
+	}
+
+	// Start collectors with new configuration
+	if err := s.startCollectors(); err != nil {
+		return fmt.Errorf("failed to start collectors: %w", err)
+	}
+
+	return nil
 }
 
 // setupLeaderElection creates and starts the leader elector
@@ -184,14 +259,14 @@ func (s *Server) setupLeaderElection() error {
 		func(ctx context.Context) {
 			log.Info("Became leader, starting leader-required collectors")
 
-			if err := s.registry.StartWithLeaderElection(ctx, true); err != nil {
+			if err := s.registry.StartLeaderCollectors(ctx); err != nil {
 				log.WithError(err).Error("Failed to start leader-required collectors")
 			}
 		},
 		func() {
 			log.Info("Lost leadership, stopping leader-required collectors")
 
-			if err := s.registry.StopWithLeaderElection(true); err != nil {
+			if err := s.registry.StopLeaderCollectors(); err != nil {
 				log.WithError(err).Error("Failed to stop leader-required collectors")
 			}
 		},
@@ -261,8 +336,10 @@ func (s *Server) Reload(newConfigContent []byte, newConfig *config.GlobalConfig)
 		return errors.New("server not running, context is nil")
 	}
 
-	// Stop current leader election
-	s.stopLeaderElection()
+	// 1. Stop all collectors based on current configuration
+	if err := s.stopCollectors(); err != nil {
+		logger.WithError(err).Warn("Failed to stop collectors")
+	}
 
 	// Check if K8s config changed before applying new config
 	k8sConfigChanged := !s.config.Kubernetes.Equal(newConfig.Kubernetes)
@@ -280,13 +357,11 @@ func (s *Server) Reload(newConfigContent []byte, newConfig *config.GlobalConfig)
 		}
 	}
 
-	// Reinitialize and restart collectors
-	if err := s.registry.Reinitialize(s.buildInitConfig()); err != nil {
+	// 3. Reinitialize and start collectors atomically, and setup leader election if needed
+	// This is done atomically to minimize the gap where collectors are running
+	// but leader election is not yet set up
+	if err := s.reinitializeAndStartCollectors(); err != nil {
 		return fmt.Errorf("failed to reinitialize collectors: %w", err)
-	}
-
-	if err := s.startCollectors(); err != nil {
-		return fmt.Errorf("failed to start collectors: %w", err)
 	}
 
 	logger.Info("Server reload completed successfully")
@@ -298,20 +373,17 @@ func (s *Server) Reload(newConfigContent []byte, newConfig *config.GlobalConfig)
 func (s *Server) Shutdown() error {
 	log.Info("Shutting down server")
 
-	// Stop leader election (idempotent)
-	s.stopLeaderElection()
-
-	// Stop collectors
-	if err := s.registry.Stop(); err != nil {
-		log.WithError(err).Error("Failed to stop collectors")
-	}
-
-	// Shutdown HTTP server with timeout
+	// 1. Shutdown HTTP server first - stop accepting new requests but wait for existing ones
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	if err := s.httpServer.Shutdown(ctx); err != nil {
-		return fmt.Errorf("failed to shutdown HTTP server: %w", err)
+		log.WithError(err).Error("Failed to shutdown HTTP server gracefully")
+	}
+
+	// 2. Stop all collectors based on current configuration
+	if err := s.stopCollectors(); err != nil {
+		log.WithError(err).Error("Failed to stop collectors")
 	}
 
 	log.Info("Server shutdown complete")
