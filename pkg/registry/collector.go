@@ -68,13 +68,9 @@ func (pc *PrometheusCollector) Describe(ch chan<- *prometheus.Desc) {
 	// Describe all collectors concurrently
 	var wg sync.WaitGroup
 	for _, c := range collectors {
-		wg.Add(1)
-
-		go func(col collector.Collector) {
-			defer wg.Done()
-
-			col.Describe(ch)
-		}(c)
+		wg.Go(func() {
+			c.Describe(ch)
+		})
 	}
 
 	wg.Wait()

@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -21,8 +20,8 @@ type BaseCollector struct {
 	waitReadyTimeout       time.Duration // Timeout for WaitReady in Collect
 
 	mu        sync.RWMutex
-	started   atomic.Bool
-	ready     atomic.Bool
+	started   bool
+	ready     bool
 	readyCh   chan struct{} // closed when ready, recreated on Start
 	stoppedCh chan struct{} // closed when stopped, for WaitReady to detect stop
 	//nolint:containedctx // Context is intentionally stored to manage collector lifecycle between Start/Stop
@@ -125,29 +124,45 @@ func (b *BaseCollector) SetLifecycle(lifecycle Lifecycle) {
 
 // Start initializes the collector context
 func (b *BaseCollector) Start(ctx context.Context) error {
-	if b.started.Load() {
-		return fmt.Errorf("collector %s already started", b.name)
-	}
-
 	b.mu.Lock()
 
-	if b.started.Load() {
+	if b.started {
+		b.mu.Unlock()
 		return fmt.Errorf("collector %s already started", b.name)
 	}
 
 	b.ctx, b.cancel = context.WithCancel(ctx)
-	b.started.Store(true)
-	b.ready.Store(false)
+	b.started = true
+	b.ready = false
 	b.readyCh = make(chan struct{})
 	b.stoppedCh = make(chan struct{})
 	lifecycle := b.lifecycle
+
 	b.mu.Unlock()
 
 	b.logger.WithField("name", b.name).Info("Collector started")
 
-	// Call lifecycle OnStart hook if set
+	// Call lifecycle OnStart hook if set (outside the lock to avoid deadlock)
 	if lifecycle != nil {
 		if err := lifecycle.OnStart(b.ctx); err != nil {
+			// OnStart failed, rollback the started state
+			b.mu.Lock()
+
+			if b.cancel != nil {
+				b.cancel()
+				b.cancel = nil
+			}
+
+			b.started = false
+
+			b.ready = false
+			if b.stoppedCh != nil {
+				close(b.stoppedCh)
+				b.stoppedCh = nil
+			}
+
+			b.mu.Unlock()
+
 			return fmt.Errorf("collector %s OnStart failed: %w", b.name, err)
 		}
 	}
@@ -157,13 +172,10 @@ func (b *BaseCollector) Start(ctx context.Context) error {
 
 // Stop gracefully stops the collector
 func (b *BaseCollector) Stop() error {
-	if !b.started.Load() {
-		return fmt.Errorf("collector %s not started", b.name)
-	}
-
 	b.mu.Lock()
 
-	if !b.started.Load() {
+	if !b.started {
+		b.mu.Unlock()
 		return fmt.Errorf("collector %s not started", b.name)
 	}
 
@@ -174,8 +186,8 @@ func (b *BaseCollector) Stop() error {
 		b.cancel = nil
 	}
 
-	b.started.Store(false)
-	b.ready.Store(false)
+	b.started = false
+	b.ready = false
 
 	// Close stoppedCh to notify WaitReady callers
 	if b.stoppedCh != nil {
@@ -185,7 +197,7 @@ func (b *BaseCollector) Stop() error {
 
 	b.mu.Unlock()
 
-	// Call lifecycle OnStop hook if set (before cleanup)
+	// Call lifecycle OnStop hook if set (outside the lock to avoid deadlock)
 	if lifecycle != nil {
 		if err := lifecycle.OnStop(); err != nil {
 			b.logger.WithError(err).
@@ -201,25 +213,23 @@ func (b *BaseCollector) Stop() error {
 
 // IsStarted returns whether the collector is started
 func (b *BaseCollector) IsStarted() bool {
-	return b.started.Load()
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	return b.started
 }
 
 // SetReady marks the collector as ready to collect metrics
 // Note: Once ready, the collector cannot become not-ready again (except through Stop/Start cycle)
 func (b *BaseCollector) SetReady() {
-	if b.ready.Load() {
-		return
-	}
-
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
 	// Only set ready once per Start cycle
-	if b.ready.Load() {
+	if b.ready {
 		return
 	}
 
-	b.ready.Store(true)
+	b.ready = true
 	b.logger.WithField("name", b.name).Debug("Collector marked as ready")
 
 	// Close readyCh to notify WaitReady callers
@@ -230,22 +240,25 @@ func (b *BaseCollector) SetReady() {
 
 // IsReady returns whether the collector is ready to collect metrics
 func (b *BaseCollector) IsReady() bool {
-	return b.ready.Load()
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	return b.ready
 }
 
 // WaitReady blocks until the collector is ready to collect metrics
 // Returns nil if ready, or an error if context is cancelled or collector is stopped
 func (b *BaseCollector) WaitReady(ctx context.Context) error {
-	// Fast path: already ready
-	if b.ready.Load() {
-		return nil
-	}
-
-	// Get channels under lock
+	// Get channels and ready status under lock
 	b.mu.RLock()
+	ready := b.ready
 	readyCh := b.readyCh
 	stoppedCh := b.stoppedCh
 	b.mu.RUnlock()
+
+	// Fast path: already ready
+	if ready {
+		return nil
+	}
 
 	// Check if collector was started
 	if readyCh == nil || stoppedCh == nil {
@@ -264,14 +277,15 @@ func (b *BaseCollector) WaitReady(ctx context.Context) error {
 
 // Health performs a basic health check
 func (b *BaseCollector) Health() error {
-	if !b.started.Load() {
-		return fmt.Errorf("collector %s not running", b.name)
-	}
-
 	b.mu.RLock()
+	started := b.started
 	ctx := b.ctx
 	lifecycle := b.lifecycle
 	b.mu.RUnlock()
+
+	if !started {
+		return fmt.Errorf("collector %s not running", b.name)
+	}
 
 	if ctx == nil {
 		return fmt.Errorf("collector %s has nil context", b.name)
@@ -313,8 +327,14 @@ func (b *BaseCollector) Describe(ch chan<- *prometheus.Desc) {
 
 // Collect calls the lifecycle OnCollect hook
 func (b *BaseCollector) Collect(ch chan<- prometheus.Metric) {
+	b.mu.RLock()
+	started := b.started
+	ready := b.ready
+	lifecycle := b.lifecycle
+	b.mu.RUnlock()
+
 	// Only collect metrics if the collector has been started
-	if !b.started.Load() {
+	if !started {
 		return
 	}
 
@@ -329,15 +349,11 @@ func (b *BaseCollector) Collect(ch chan<- prometheus.Metric) {
 				Warn("Collector not ready, skipping metric collection")
 			return
 		}
-	} else if !b.ready.Load() {
+	} else if !ready {
 		b.logger.WithField("name", b.name).
 			Warn("Collector not ready, skipping metric collection")
 		return
 	}
-
-	b.mu.RLock()
-	lifecycle := b.lifecycle
-	b.mu.RUnlock()
 
 	if lifecycle != nil {
 		lifecycle.OnCollect(ch)

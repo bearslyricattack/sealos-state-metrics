@@ -81,12 +81,8 @@ func (c *Collector) Poll(ctx context.Context) error {
 	// Check domains concurrently
 	var wg sync.WaitGroup
 	for _, domain := range c.config.Domains {
-		wg.Add(1)
-
-		go func(d string) {
-			defer wg.Done()
-
-			ipHealths := c.checker.CheckIPs(ctx, d, c.logger)
+		wg.Go(func() {
+			ipHealths := c.checker.CheckIPs(ctx, domain, c.logger)
 
 			// Add IP health results to new map
 			mu.Lock()
@@ -97,7 +93,7 @@ func (c *Collector) Poll(ctx context.Context) error {
 			}
 
 			mu.Unlock()
-		}(domain)
+		})
 	}
 
 	wg.Wait()
