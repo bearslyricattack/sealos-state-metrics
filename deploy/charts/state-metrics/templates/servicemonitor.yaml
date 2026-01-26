@@ -27,6 +27,7 @@ spec:
         insecureSkipVerify: true
         {{- else }}
         caFile: /etc/prometheus/secrets/{{ include "state-metrics.fullname" . }}-tls/ca.crt
+        serverName: {{ include "state-metrics.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local
         {{- end }}
       {{- end }}
       {{- if .Values.auth.enabled }}

@@ -30,6 +30,7 @@ spec:
           secret:
             name: {{ include "state-metrics.fullname" . }}-tls
             key: ca.crt
+        serverName: {{ include "state-metrics.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local
         {{- end }}
       {{- end }}
       {{- if .Values.auth.enabled }}
