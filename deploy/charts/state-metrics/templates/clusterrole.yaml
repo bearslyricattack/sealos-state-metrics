@@ -22,6 +22,14 @@ rules:
       - pods
     verbs: ["get", "list"]
 
+{{- if has "kubeblocks" .Values.enabledCollectors }}
+  # KubeBlocks resources (for kubeblocks collector)
+  - apiGroups: ["apps.kubeblocks.io"]
+    resources:
+      - clusters
+    verbs: ["get", "list", "watch"]
+{{- end }}
+
   # Coordination for leader election
   - apiGroups: ["coordination.k8s.io"]
     resources:

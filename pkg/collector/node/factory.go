@@ -87,7 +87,11 @@ func NewCollector(factoryCtx *collector.FactoryContext) (collector.Collector, er
 			//nolint:errcheck // AddEventHandler returns (registration, error) but error is always nil in client-go
 			c.informer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 				AddFunc: func(obj any) {
-					node := obj.(*corev1.Node) //nolint:errcheck // Type assertion is safe from informer
+					node, ok := obj.(*corev1.Node)
+					if !ok {
+						c.logger.WithField("object", obj).Error("Failed to cast object to Node")
+						return
+					}
 
 					c.mu.Lock()
 					c.nodes[node.Name] = node.DeepCopy()
@@ -95,7 +99,11 @@ func NewCollector(factoryCtx *collector.FactoryContext) (collector.Collector, er
 					c.logger.WithField("node", node.Name).Debug("Node added")
 				},
 				UpdateFunc: func(oldObj, newObj any) {
-					node := newObj.(*corev1.Node) //nolint:errcheck // Type assertion is safe from informer
+					node, ok := newObj.(*corev1.Node)
+					if !ok {
+						c.logger.WithField("object", newObj).Error("Failed to cast object to Node")
+						return
+					}
 
 					c.mu.Lock()
 					c.nodes[node.Name] = node.DeepCopy()
@@ -103,7 +111,23 @@ func NewCollector(factoryCtx *collector.FactoryContext) (collector.Collector, er
 					c.logger.WithField("node", node.Name).Debug("Node updated")
 				},
 				DeleteFunc: func(obj any) {
-					node := obj.(*corev1.Node) //nolint:errcheck // Type assertion is safe from informer
+					// Handle DeletedFinalStateUnknown
+					node, ok := obj.(*corev1.Node)
+					if !ok {
+						tombstone, ok := obj.(cache.DeletedFinalStateUnknown)
+						if !ok {
+							c.logger.WithField("object", obj).
+								Error("Failed to decode deleted object")
+							return
+						}
+
+						node, ok = tombstone.Obj.(*corev1.Node)
+						if !ok {
+							c.logger.WithField("object", tombstone.Obj).
+								Error("Tombstone contained object that is not a Node")
+							return
+						}
+					}
 
 					c.mu.Lock()
 					delete(c.nodes, node.Name)

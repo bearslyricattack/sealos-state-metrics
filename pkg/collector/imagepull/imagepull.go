@@ -84,19 +84,44 @@ func (c *Collector) HasSynced() bool {
 
 // handlePodAdd handles pod add events
 func (c *Collector) handlePodAdd(ctx context.Context, obj any) {
-	pod := obj.(*corev1.Pod) //nolint:errcheck // Type assertion is safe from informer
+	pod, ok := obj.(*corev1.Pod)
+	if !ok {
+		c.logger.WithField("object", obj).Error("Failed to cast object to Pod")
+		return
+	}
+
 	c.processPod(ctx, pod)
 }
 
 // handlePodUpdate handles pod update events
 func (c *Collector) handlePodUpdate(ctx context.Context, _, newObj any) {
-	pod := newObj.(*corev1.Pod) //nolint:errcheck // Type assertion is safe from informer
+	pod, ok := newObj.(*corev1.Pod)
+	if !ok {
+		c.logger.WithField("object", newObj).Error("Failed to cast object to Pod")
+		return
+	}
+
 	c.processPod(ctx, pod)
 }
 
 // handlePodDelete handles pod delete events
 func (c *Collector) handlePodDelete(obj any) {
-	pod := obj.(*corev1.Pod) //nolint:errcheck // Type assertion is safe from informer
+	// Handle DeletedFinalStateUnknown
+	pod, ok := obj.(*corev1.Pod)
+	if !ok {
+		tombstone, ok := obj.(cache.DeletedFinalStateUnknown)
+		if !ok {
+			c.logger.WithField("object", obj).Error("Failed to decode deleted object")
+			return
+		}
+
+		pod, ok = tombstone.Obj.(*corev1.Pod)
+		if !ok {
+			c.logger.WithField("object", tombstone.Obj).
+				Error("Tombstone contained object that is not a Pod")
+			return
+		}
+	}
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
