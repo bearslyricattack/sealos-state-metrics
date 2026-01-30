@@ -63,6 +63,7 @@ func NewCollector(factoryCtx *collector.FactoryContext) (collector.Collector, er
 				c.pgClient.Close()
 				c.logger.Debug("Database connection closed")
 			}
+			c.pgClient = nil
 			return nil
 		},
 	})
