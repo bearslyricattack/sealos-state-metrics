@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 )
 
 func (c *Collector) QueryBalance(user UserConfig) (float64, error) {
@@ -41,7 +42,7 @@ func (c *Collector) QueryBalance(user UserConfig) (float64, error) {
 		return 0, fmt.Errorf("query user balance failed: %w", err)
 	}
 
-	actualBalance := float64(balance-deductionBalance) / 1000000
+	actualBalance := math.Round(float64(balance-deductionBalance)/1000000*100) / 100
 
 	return actualBalance, nil
 }
