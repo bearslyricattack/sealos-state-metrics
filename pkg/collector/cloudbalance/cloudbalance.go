@@ -77,10 +77,7 @@ func (c *Collector) Poll(ctx context.Context) error {
 	}
 
 	c.logger.WithField("count", len(c.config.Accounts)).Info("Starting cloud balance checks")
-
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
+	newBalances := make(map[string]float64)
 	for _, account := range c.config.Accounts {
 		select {
 		case <-ctx.Done():
@@ -99,7 +96,7 @@ func (c *Collector) Poll(ctx context.Context) error {
 		}
 
 		key := string(account.Provider) + ":" + account.AccountID
-		c.balances[key] = balance
+		newBalances[key] = balance
 
 		c.logger.WithFields(log.Fields{
 			"provider":   account.Provider,
@@ -107,7 +104,9 @@ func (c *Collector) Poll(ctx context.Context) error {
 			"balance":    balance,
 		}).Debug("Cloud balance updated")
 	}
-
+	c.mu.Lock()
+	c.balances = newBalances
+	defer c.mu.Unlock()
 	return nil
 }
 
