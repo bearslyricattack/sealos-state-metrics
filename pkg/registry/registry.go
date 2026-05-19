@@ -4,12 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 
 	"github.com/labring/sealos-state-metrics/pkg/collector"
 	"github.com/labring/sealos-state-metrics/pkg/config"
 	"github.com/labring/sealos-state-metrics/pkg/identity"
+	"github.com/mitchellh/mapstructure"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -145,7 +147,10 @@ func (r *Registry) createCollectors(cfg *InitConfig, action string) {
 	// Create config loader: content -> env (priority: defaults < content < env)
 	configLoader := config.NewWrapConfigLoader()
 	if len(cfg.ConfigContent) > 0 {
-		configLoader.Add(config.NewModuleConfigLoader(cfg.ConfigContent))
+		configLoader.Add(config.NewModuleConfigLoader(
+			cfg.ConfigContent,
+			config.WithModuleDecodeHook(mapstructure.StringToTimeDurationHookFunc()),
+		))
 	}
 
 	configLoader.Add(config.NewEnvConfigLoader())
@@ -199,6 +204,19 @@ func (r *Registry) StartNonLeaderCollectors(ctx context.Context) error {
 func (r *Registry) StartLeaderCollectors(ctx context.Context) error {
 	requireLeader := true
 	return r.startCollectors(ctx, &requireLeader)
+}
+
+// StartCollector starts a single collector by name.
+func (r *Registry) StartCollector(ctx context.Context, name string) error {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	c, exists := r.collectors[name]
+	if !exists {
+		return fmt.Errorf("collector %s not found", name)
+	}
+
+	return c.Start(ctx)
 }
 
 // startCollectors starts collectors based on leader election filter.
@@ -328,6 +346,19 @@ func (r *Registry) StopLeaderCollectors() error {
 	return nil
 }
 
+// StopCollector stops a single collector by name.
+func (r *Registry) StopCollector(name string) error {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	c, exists := r.collectors[name]
+	if !exists {
+		return fmt.Errorf("collector %s not found", name)
+	}
+
+	return c.Stop()
+}
+
 // StopNonLeaderCollectors stops only collectors that do not require leader election
 func (r *Registry) StopNonLeaderCollectors() error {
 	r.mu.RLock()
@@ -385,6 +416,23 @@ func (r *Registry) ListCollectors() []string {
 	for name := range r.collectors {
 		names = append(names, name)
 	}
+
+	return names
+}
+
+// ListCollectorsByLeaderRequirement returns collector names filtered by leader election requirement.
+func (r *Registry) ListCollectorsByLeaderRequirement(requireLeader bool) []string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	names := make([]string, 0, len(r.collectors))
+	for name, c := range r.collectors {
+		if c.RequiresLeaderElection() == requireLeader {
+			names = append(names, name)
+		}
+	}
+
+	sort.Strings(names)
 
 	return names
 }

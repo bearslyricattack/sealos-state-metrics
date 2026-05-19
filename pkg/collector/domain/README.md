@@ -19,21 +19,49 @@ The Domain collector monitors domain health by performing DNS lookups, HTTP chec
 collectors:
   domain:
     domains:
-      - example.com
+      - endpoint: example.com
+        skipTLSVerify: false
+        followHTTPRedirects: true
+      - endpoint: internal.example.local:8443
+        skipTLSVerify: true
+        followHTTPRedirects: false
+        path: /healthz?ready=true
+        method: GET
+        headers:
+          X-Probe: sealos-state-metrics
+        expectedStatusCodes: [200, 204]
       - api.example.com
-    checkTimeout: "5s"
-    checkInterval: "5m"
+    checkTimeout: "30s"
+    checkInterval: "1m"
+    dialRetries: 3
+    includeIPv4: true
+    includeIPv6: true
     includeCertCheck: true
     includeHTTPCheck: true
 ```
+
+`domains` supports mixed entries:
+
+- Legacy string entries such as `example.com` or `api.example.com:8443`
+- Object entries such as `{ endpoint: internal.example.local:8443, skipTLSVerify: true, followHTTPRedirects: false, path: /healthz, method: GET, expectedStatusCodes: [200, 204] }`
 
 ### Configuration Fields
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `domains` | []string | `[]` | List of domains to monitor |
-| `checkTimeout` | duration | `5s` | Timeout for each health check |
-| `checkInterval` | duration | `5m` | Interval between check cycles |
+| `domains` | `[]string` or `[]object` | `[]` | List of domains to monitor. Entries may be strings or objects with per-domain options |
+| `domains[].endpoint` | string | - | Domain endpoint in `host` or `host:port` format |
+| `domains[].skipTLSVerify` | bool | `false` | Skip TLS certificate verification for this domain during HTTPS and cert checks |
+| `domains[].followHTTPRedirects` | bool | `true` | Follow HTTP redirects for this domain during HTTP checks |
+| `domains[].path` | string | `/` | HTTP request path used during HTTP checks. Query strings are supported |
+| `domains[].method` | string | `GET` | HTTP request method used during HTTP checks |
+| `domains[].headers` | map[string]string | `{}` | HTTP request headers used during HTTP checks |
+| `domains[].expectedStatusCodes` | []int | `[]` | Exact HTTP status codes accepted as healthy. When empty, any `2xx`, `3xx`, or `4xx` response is healthy for backward compatibility |
+| `checkTimeout` | duration | `30s` | Timeout for each health check |
+| `checkInterval` | duration | `1m` | Interval between check cycles |
+| `dialRetries` | int | `3` | Number of connection attempts for HTTP and certificate checks. HTTPS attempts include both TCP dial and TLS handshake |
+| `includeIPv4` | bool | `true` | Include IPv4 addresses returned by DNS resolution |
+| `includeIPv6` | bool | `true` | Include IPv6 addresses returned by DNS resolution |
 | `includeCertCheck` | bool | `true` | Enable TLS certificate validation |
 | `includeHTTPCheck` | bool | `true` | Enable HTTP connectivity checks |
 
@@ -46,8 +74,17 @@ All configuration can be overridden using environment variables with the prefix 
 | `COLLECTORS_DOMAIN_DOMAINS` | `domains` | `example.com,api.example.com` |
 | `COLLECTORS_DOMAIN_CHECK_TIMEOUT` | `checkTimeout` | `10s` |
 | `COLLECTORS_DOMAIN_CHECK_INTERVAL` | `checkInterval` | `10m` |
+| `COLLECTORS_DOMAIN_DIAL_RETRIES` | `dialRetries` | `3` |
+| `COLLECTORS_DOMAIN_INCLUDE_IPV4` | `includeIPv4` | `true` |
+| `COLLECTORS_DOMAIN_INCLUDE_IPV6` | `includeIPv6` | `false` |
 | `COLLECTORS_DOMAIN_INCLUDE_CERT_CHECK` | `includeCertCheck` | `true` |
 | `COLLECTORS_DOMAIN_INCLUDE_HTTP_CHECK` | `includeHTTPCheck` | `false` |
+
+Notes:
+
+- `COLLECTORS_DOMAIN_DOMAINS` only supports the legacy comma-separated string format.
+- If `COLLECTORS_DOMAIN_DOMAINS` is set, it overrides the YAML `domains` list.
+- `skipTLSVerify`, `followHTTPRedirects`, `path`, `method`, `headers`, and `expectedStatusCodes` are only configurable through YAML object entries.
 
 ## Metrics
 
@@ -108,18 +145,44 @@ sealos_domain_health{type="unhealthy_ips"} > 0
 sealos_domain_health{type="healthy_ips"} / sealos_domain_health{type="ip_count"} * 100
 ```
 
+### `sealos_domain_dns_status`
+
+**Type:** Gauge
+**Labels:**
+- `domain`: Domain name being monitored
+- `error_type`: DNS error type if resolution failed (empty if successful)
+
+**Values:**
+- `1`: DNS resolution succeeded
+- `0`: DNS resolution failed
+
+**Example:**
+```promql
+# DNS resolution succeeded
+sealos_domain_dns_status{domain="example.com",error_type=""} 1
+
+# DNS resolution failure
+sealos_domain_dns_status{domain="bad.example.com",error_type="DNSNoSuchHost"} 0
+
+# DNS resolved no usable addresses after filtering
+sealos_domain_dns_status{domain="noip.example.com",error_type="DNSNoAnswer"} 0
+```
+
 ### `sealos_domain_status`
 
 **Type:** Gauge
 **Labels:**
 - `domain`: Domain name being monitored
 - `ip`: Resolved IP address
-- `check_type`: Type of check performed (`dns`, `cert`, `http`)
+- `check_type`: Type of check performed (`cert`, `http`)
 - `error_type`: Error type if check failed (empty if successful)
 
 **Values:**
 - `1`: Check passed
 - `0`: Check failed
+
+Successful checks use `error_type=""`.
+Checks that were not executed are not emitted.
 
 **Example:**
 ```promql
@@ -127,14 +190,8 @@ sealos_domain_health{type="healthy_ips"} / sealos_domain_health{type="ip_count"}
 sealos_domain_status{domain="example.com",ip="93.184.216.34",check_type="http",error_type=""} 1
 sealos_domain_status{domain="example.com",ip="93.184.216.34",check_type="cert",error_type=""} 1
 
-# DNS resolution failure (ip is empty string)
-sealos_domain_status{domain="bad.example.com",ip="",check_type="http",error_type="dns"} 0
-
-# No IPs resolved (ip is empty string)
-sealos_domain_status{domain="noip.example.com",ip="",check_type="http",error_type="dns"} 0
-
 # HTTP check failure for specific IP
-sealos_domain_status{domain="slow.example.com",ip="1.2.3.4",check_type="http",error_type="timeout"} 0
+sealos_domain_status{domain="slow.example.com",ip="1.2.3.4",check_type="http",error_type="Timeout"} 0
 ```
 
 ### `sealos_domain_cert_expiry_seconds`
@@ -181,13 +238,25 @@ An IP is considered **unhealthy** if:
 
 - Any enabled check fails
 
+### TLS Verification
+
+- TLS certificate checks are performed independently for each resolved IP.
+- DNS results can be filtered globally with `includeIPv4` and `includeIPv6`.
+- HTTP checks and certificate checks both honor the per-domain `skipTLSVerify` option.
+- HTTP checks use per-domain `path`, `method`, `headers`, and `expectedStatusCodes` when configured.
+- When `expectedStatusCodes` is empty, HTTP checks keep the legacy behavior where any `2xx`, `3xx`, or `4xx` status is treated as healthy.
+- When `domains[].followHTTPRedirects=true`, redirects to the original monitored host continue to use the resolved IP being checked. Redirects to a different host fall back to the default dial path so the redirected hostname is resolved normally.
+- When `domains[].followHTTPRedirects=false`, the HTTP check returns the first redirect response instead of following it.
+- When `skipTLSVerify=true`, TLS chain and hostname verification are skipped for that domain. This is intended for internal endpoints with self-signed or privately issued certificates.
+
 ### DNS Resolution Failures
 
 When DNS resolution fails or returns no IPs:
 
 - `sealos_domain_health{type="resolve"}` is set to `0` (for DNS failures) or `1` (for empty IP list)
 - `sealos_domain_health{type="ip_count"}` is set to `0`
-- `sealos_domain_status` metrics are still exposed with `ip=""` to indicate the issue
+- `sealos_domain_dns_status` is emitted once per domain
+- `http` and `cert` status metrics are not emitted because those checks were not executed
 - This ensures monitoring systems are always aware of domain problems
 
 ### Example Scenarios

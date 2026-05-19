@@ -14,10 +14,13 @@ const (
 	ErrorTypeConnectionRefused ErrorType = "ConnectionRefused"
 	ErrorTypeTimeout           ErrorType = "Timeout"
 	ErrorTypeDNSError          ErrorType = "DNSError"
+	ErrorTypeDNSNoSuchHost     ErrorType = "DNSNoSuchHost"
+	ErrorTypeDNSNoAnswer       ErrorType = "DNSNoAnswer"
 	ErrorTypeHTTPClientError   ErrorType = "HTTPClientError" // 4xx
 	ErrorTypeHTTPServerError   ErrorType = "HTTPServerError" // 5xx
 	ErrorTypeSSLError          ErrorType = "SSLError"
 	ErrorTypeNetworkError      ErrorType = "NetworkError"
+	ErrorTypeNoResolvedIP      ErrorType = "NoResolvedIP"
 
 	// Certificate errors
 	ErrorTypeCertExpired          ErrorType = "CertExpired"
@@ -44,10 +47,19 @@ var (
 	}
 
 	dnsErrorPatterns = []*regexp.Regexp{
-		regexp.MustCompile(`(?i)no such host`),
 		regexp.MustCompile(`(?i)dns.*fail`),
 		regexp.MustCompile(`(?i)lookup.*fail`),
 		regexp.MustCompile(`(?i)name resolution fail`),
+	}
+
+	dnsNoSuchHostPatterns = []*regexp.Regexp{
+		regexp.MustCompile(`(?i)no such host`),
+	}
+
+	dnsNoAnswerPatterns = []*regexp.Regexp{
+		regexp.MustCompile(`(?i)no ips resolved`),
+		regexp.MustCompile(`(?i)returned no ips`),
+		regexp.MustCompile(`(?i)no answer`),
 	}
 
 	httpClientErrorPatterns = []*regexp.Regexp{
@@ -62,12 +74,15 @@ var (
 		regexp.MustCompile(`(?i)internal server error`),
 		regexp.MustCompile(`(?i)bad gateway`),
 		regexp.MustCompile(`(?i)service unavailable`),
+		regexp.MustCompile(`(?i)unexpected status code`),
 	}
 
 	sslErrorPatterns = []*regexp.Regexp{
 		regexp.MustCompile(`(?i)ssl.*error`),
 		regexp.MustCompile(`(?i)tls.*handshake`),
 		regexp.MustCompile(`(?i)certificate.*verify`),
+		regexp.MustCompile(`(?i)failed to verify certificate`),
+		regexp.MustCompile(`(?i)unknown authority`),
 	}
 
 	networkErrorPatterns = []*regexp.Regexp{
@@ -96,6 +111,7 @@ var (
 	certHostnameMismatchPatterns = []*regexp.Regexp{
 		regexp.MustCompile(`(?i)hostname.*mismatch`),
 		regexp.MustCompile(`(?i)certificate.*valid.*name`),
+		regexp.MustCompile(`(?i)certificate is valid for`),
 	}
 )
 
@@ -114,6 +130,14 @@ func (c *ErrorClassifier) ClassifyHTTPError(errorMsg string) ErrorType {
 	}
 
 	text := strings.ToLower(errorMsg)
+
+	if matchesAny(text, dnsNoSuchHostPatterns) {
+		return ErrorTypeDNSNoSuchHost
+	}
+
+	if matchesAny(text, dnsNoAnswerPatterns) {
+		return ErrorTypeDNSNoAnswer
+	}
 
 	if matchesAny(text, connectionRefusedPatterns) {
 		return ErrorTypeConnectionRefused
@@ -146,6 +170,33 @@ func (c *ErrorClassifier) ClassifyHTTPError(errorMsg string) ErrorType {
 	return ErrorTypeUnknown
 }
 
+// ClassifyDNSError classifies DNS resolution failures.
+func (c *ErrorClassifier) ClassifyDNSError(errorMsg string) ErrorType {
+	if errorMsg == "" {
+		return ErrorTypeDNSError
+	}
+
+	text := strings.ToLower(errorMsg)
+
+	if matchesAny(text, timeoutPatterns) {
+		return ErrorTypeTimeout
+	}
+
+	if matchesAny(text, dnsNoSuchHostPatterns) {
+		return ErrorTypeDNSNoSuchHost
+	}
+
+	if matchesAny(text, dnsNoAnswerPatterns) {
+		return ErrorTypeDNSNoAnswer
+	}
+
+	if matchesAny(text, dnsErrorPatterns) {
+		return ErrorTypeDNSError
+	}
+
+	return ErrorTypeDNSError
+}
+
 // ClassifyCertError classifies certificate check error
 func (c *ErrorClassifier) ClassifyCertError(errorMsg string) ErrorType {
 	if errorMsg == "" {
@@ -153,6 +204,22 @@ func (c *ErrorClassifier) ClassifyCertError(errorMsg string) ErrorType {
 	}
 
 	text := strings.ToLower(errorMsg)
+
+	if matchesAny(text, connectionRefusedPatterns) {
+		return ErrorTypeConnectionRefused
+	}
+
+	if matchesAny(text, timeoutPatterns) {
+		return ErrorTypeTimeout
+	}
+
+	if matchesAny(text, dnsErrorPatterns) {
+		return ErrorTypeDNSError
+	}
+
+	if matchesAny(text, networkErrorPatterns) {
+		return ErrorTypeNetworkError
+	}
 
 	if matchesAny(text, certExpiredPatterns) {
 		return ErrorTypeCertExpired

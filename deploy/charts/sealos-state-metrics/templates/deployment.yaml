@@ -1,0 +1,19 @@
+{{- if and .Values.enabledCollectors (eq (.Values.deploymentMode | default "daemonset") "deployment") }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "sealos-state-metrics.fullname" . }}
+  labels:
+    {{- include "sealos-state-metrics.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: {{ .Values.updateStrategy.maxUnavailable | quote }}
+  selector:
+    matchLabels:
+      {{- include "sealos-state-metrics.selectorLabels" . | nindent 6 }}
+  template:
+    {{- include "sealos-state-metrics.podTemplate" . | nindent 4 }}
+{{- end }}

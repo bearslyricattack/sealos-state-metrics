@@ -4,6 +4,8 @@ package registry
 import (
 	"context"
 	"errors"
+	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -14,13 +16,53 @@ import (
 
 // mockCollector is a simple mock implementation of collector.Collector for testing
 type mockCollector struct {
-	name string
+	name          string
+	requireLeader bool
+	started       bool
+	startCount    int
+	stopCount     int
+	mu            sync.Mutex
+	startErr      error
+	stopErr       error
 }
 
-func (m *mockCollector) Name() string                        { return m.name }
-func (m *mockCollector) RequiresLeaderElection() bool        { return false }
-func (m *mockCollector) Start(ctx context.Context) error     { return nil }
-func (m *mockCollector) Stop() error                         { return nil }
+func (m *mockCollector) Name() string                 { return m.name }
+func (m *mockCollector) RequiresLeaderElection() bool { return m.requireLeader }
+func (m *mockCollector) Start(ctx context.Context) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.startErr != nil {
+		return m.startErr
+	}
+
+	if m.started {
+		return fmt.Errorf("collector %s already started", m.name)
+	}
+
+	m.started = true
+	m.startCount++
+
+	return nil
+}
+
+func (m *mockCollector) Stop() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.stopErr != nil {
+		return m.stopErr
+	}
+
+	if !m.started {
+		return fmt.Errorf("collector %s not started", m.name)
+	}
+
+	m.started = false
+	m.stopCount++
+
+	return nil
+}
 func (m *mockCollector) Describe(ch chan<- *prometheus.Desc) {}
 func (m *mockCollector) Collect(ch chan<- prometheus.Metric) {}
 func (m *mockCollector) Health() error                       { return nil }
@@ -131,5 +173,110 @@ func TestReinitializeClearsFailedCollectors(t *testing.T) {
 	failedCollectors := r.GetFailedCollectors()
 	if len(failedCollectors) != 0 {
 		t.Errorf("Expected failed collectors to be cleared, got %d", len(failedCollectors))
+	}
+}
+
+func TestCreateCollectorsDecodesDurationModuleConfig(t *testing.T) {
+	type testConfig struct {
+		CheckTimeout time.Duration `yaml:"checkTimeout"`
+	}
+
+	r := &Registry{
+		factories:        make(map[string]collector.Factory),
+		collectors:       make(map[string]collector.Collector),
+		failedCollectors: make(map[string]error),
+	}
+
+	r.factories["test"] = func(ctx *collector.FactoryContext) (collector.Collector, error) {
+		cfg := &testConfig{}
+		if err := ctx.ConfigLoader.LoadModuleConfig("collectors.test", cfg); err != nil {
+			return nil, err
+		}
+
+		if cfg.CheckTimeout != 30*time.Second {
+			return nil, fmt.Errorf("checkTimeout = %v, want 30s", cfg.CheckTimeout)
+		}
+
+		return &mockCollector{name: "test"}, nil
+	}
+
+	cfg := &InitConfig{
+		Ctx: context.Background(),
+		ConfigContent: []byte(`
+collectors:
+  test:
+    checkTimeout: "30s"
+`),
+		Identity:             "test",
+		NodeName:             "test-node",
+		PodName:              "test-pod",
+		InformerResyncPeriod: 5 * time.Minute,
+		EnabledCollectors:    []string{"test"},
+	}
+
+	r.createCollectors(cfg, "Testing")
+
+	if _, exists := r.collectors["test"]; !exists {
+		t.Fatalf(
+			"expected test collector to be created, failed collectors: %v",
+			r.GetFailedCollectors(),
+		)
+	}
+}
+
+func TestStartStopCollector(t *testing.T) {
+	r := &Registry{
+		collectors: map[string]collector.Collector{
+			"leader": &mockCollector{name: "leader", requireLeader: true},
+		},
+	}
+
+	if err := r.StartCollector(context.Background(), "leader"); err != nil {
+		t.Fatalf("StartCollector failed: %v", err)
+	}
+
+	mc, ok := r.collectors["leader"].(*mockCollector)
+	if !ok {
+		t.Fatalf("collector leader has type %T, want *mockCollector", r.collectors["leader"])
+	}
+
+	if mc.startCount != 1 {
+		t.Fatalf("expected start count 1, got %d", mc.startCount)
+	}
+
+	if err := r.StopCollector("leader"); err != nil {
+		t.Fatalf("StopCollector failed: %v", err)
+	}
+
+	if mc.stopCount != 1 {
+		t.Fatalf("expected stop count 1, got %d", mc.stopCount)
+	}
+}
+
+func TestListCollectorsByLeaderRequirement(t *testing.T) {
+	r := &Registry{
+		collectors: map[string]collector.Collector{
+			"domain": &mockCollector{name: "domain", requireLeader: true},
+			"lvm":    &mockCollector{name: "lvm", requireLeader: false},
+			"node":   &mockCollector{name: "node", requireLeader: true},
+		},
+	}
+
+	leaderCollectors := r.ListCollectorsByLeaderRequirement(true)
+	nonLeaderCollectors := r.ListCollectorsByLeaderRequirement(false)
+
+	if got, want := leaderCollectors, []string{
+		"domain",
+		"node",
+	}; fmt.Sprint(
+		got,
+	) != fmt.Sprint(
+		want,
+	) {
+		t.Fatalf("expected leader collectors %v, got %v", want, got)
+	}
+
+	if got, want := nonLeaderCollectors, []string{"lvm"}; fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("expected non-leader collectors %v, got %v", want, got)
 	}
 }

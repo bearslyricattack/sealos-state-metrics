@@ -34,6 +34,14 @@ type DatabaseStatus struct {
 	ResponseTime float64 // in seconds
 }
 
+// DatabaseTask represents a database connection check task
+type DatabaseTask struct {
+	Namespace    string
+	DatabaseName string
+	DatabaseType DatabaseType
+	Secret       *corev1.Secret
+}
+
 // Collector implements database connectivity monitoring
 type Collector struct {
 	*base.BaseCollector
@@ -44,10 +52,24 @@ type Collector struct {
 	// Prometheus metrics
 	connectivityGauge *prometheus.Desc
 	responseTimeGauge *prometheus.Desc
+	// Statistics metrics
+	totalDatabasesGauge       *prometheus.Desc
+	availableDatabasesGauge   *prometheus.Desc
+	unavailableDatabasesGauge *prometheus.Desc
 
 	// Internal state
 	mu             sync.RWMutex
 	dbConnectivity map[string]*DatabaseStatus // key: namespace/name
+	// Statistics
+	stats struct {
+		total       int
+		available   int
+		unavailable int
+	}
+
+	// Secret cache and preflight checker
+	secretCache      *SecretCache
+	preflightChecker *PreflightChecker
 }
 
 // initMetrics initializes Prometheus metric descriptors
@@ -66,8 +88,32 @@ func (c *Collector) initMetrics(namespace string) {
 		nil,
 	)
 
+	c.totalDatabasesGauge = prometheus.NewDesc(
+		prometheus.BuildFQName(namespace, "database", "total"),
+		"Total number of databases being monitored",
+		[]string{"type"}, // database type
+		nil,
+	)
+
+	c.availableDatabasesGauge = prometheus.NewDesc(
+		prometheus.BuildFQName(namespace, "database", "available"),
+		"Number of available (connected) databases",
+		[]string{"type"}, // database type
+		nil,
+	)
+
+	c.unavailableDatabasesGauge = prometheus.NewDesc(
+		prometheus.BuildFQName(namespace, "database", "unavailable"),
+		"Number of unavailable (disconnected) databases",
+		[]string{"type"}, // database type
+		nil,
+	)
+
 	c.MustRegisterDesc(c.connectivityGauge)
 	c.MustRegisterDesc(c.responseTimeGauge)
+	c.MustRegisterDesc(c.totalDatabasesGauge)
+	c.MustRegisterDesc(c.availableDatabasesGauge)
+	c.MustRegisterDesc(c.unavailableDatabasesGauge)
 }
 
 // HasSynced returns true (polling collector is always synced)
@@ -82,6 +128,20 @@ func (c *Collector) Interval() time.Duration {
 
 // pollLoop periodically checks database connectivity
 func (c *Collector) pollLoop(ctx context.Context) {
+	// Initialize secret cache and preflight checker
+	c.secretCache = NewSecretCache(c.client, c.logger)
+	c.preflightChecker = NewPreflightChecker(c.client, c.logger)
+
+	// Start secret cache
+	if err := c.secretCache.Start(ctx, c.config.Namespaces); err != nil {
+		c.logger.WithError(err).
+			Error("Failed to start secret cache, falling back to direct queries")
+		c.secretCache = nil // Disable cache on error
+	} else {
+		c.logger.WithField("cache_size", c.secretCache.GetCacheSize()).
+			Info("Secret cache started successfully")
+	}
+
 	// Initial poll
 	_ = c.Poll(ctx)
 	c.SetReady()
@@ -97,6 +157,11 @@ func (c *Collector) pollLoop(ctx context.Context) {
 			}
 		case <-ctx.Done():
 			c.logger.Info("Context cancelled, stopping database poll loop")
+
+			if c.secretCache != nil {
+				c.secretCache.Stop()
+			}
+
 			return
 		}
 	}
@@ -106,177 +171,339 @@ func (c *Collector) pollLoop(ctx context.Context) {
 func (c *Collector) Poll(ctx context.Context) error {
 	c.logger.Debug("Starting database connectivity checks")
 
-	// Get list of namespaces to check
-	namespaces, err := c.getNamespaces(ctx)
-	if err != nil {
-		return err
-	}
+	// Collect all database tasks
+	tasks := c.collectDatabaseTasks(ctx)
 
-	c.logger.WithField("namespaces", len(namespaces)).Debug("Scanning namespaces for databases")
+	c.logger.WithField("total_tasks", len(tasks)).Debug("Collected database tasks")
 
-	newStatus := make(map[string]*DatabaseStatus)
+	// Process tasks concurrently by database type
+	newStatus := c.processDatabaseTasksConcurrently(ctx, tasks)
 
-	for _, ns := range namespaces {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
-		}
-
-		// Check MySQL databases
-		if err := c.scanDatabases(ctx, ns, DatabaseTypeMySQL, newStatus); err != nil {
-			c.logger.WithError(err).
-				WithField("namespace", ns).
-				Error("Failed to scan MySQL databases")
-		}
-
-		// Check PostgreSQL databases
-		if err := c.scanDatabases(ctx, ns, DatabaseTypePostgreSQL, newStatus); err != nil {
-			c.logger.WithError(err).
-				WithField("namespace", ns).
-				Error("Failed to scan PostgreSQL databases")
-		}
-
-		// Check MongoDB databases
-		if err := c.scanDatabases(ctx, ns, DatabaseTypeMongoDB, newStatus); err != nil {
-			c.logger.WithError(err).
-				WithField("namespace", ns).
-				Error("Failed to scan MongoDB databases")
-		}
-
-		// Check Redis databases
-		if err := c.scanDatabases(ctx, ns, DatabaseTypeRedis, newStatus); err != nil {
-			c.logger.WithError(err).
-				WithField("namespace", ns).
-				Error("Failed to scan Redis databases")
-		}
-	}
+	// Calculate statistics
+	stats := c.calculateStatistics(newStatus)
 
 	// Update internal state
 	c.mu.Lock()
 	c.dbConnectivity = newStatus
+	c.stats.total = stats.total
+	c.stats.available = stats.available
+	c.stats.unavailable = stats.unavailable
 	c.mu.Unlock()
 
-	c.logger.WithField("databases", len(newStatus)).Info("Database connectivity check completed")
+	c.logger.WithFields(log.Fields{
+		"total":       stats.total,
+		"available":   stats.available,
+		"unavailable": stats.unavailable,
+	}).Info("Database connectivity check completed")
 
 	return nil
 }
 
-// getNamespaces returns the list of namespaces to scan
-func (c *Collector) getNamespaces(ctx context.Context) ([]string, error) {
-	// If specific namespaces are configured, use them
-	if len(c.config.Namespaces) > 0 {
-		return c.config.Namespaces, nil
+// collectDatabaseTasks collects all database connection tasks across namespaces
+func (c *Collector) collectDatabaseTasks(ctx context.Context) []DatabaseTask {
+	var tasks []DatabaseTask
+
+	// Check if we need to scan all namespaces or specific ones
+	if len(c.config.Namespaces) == 0 {
+		// Scan all namespaces: fetch all secrets at once for better performance
+		allTasks := c.collectAllNamespaceTasks(ctx)
+		tasks = append(tasks, allTasks...)
+	} else {
+		// Scan specific namespaces
+		for _, ns := range c.config.Namespaces {
+			nsTasks := c.collectNamespaceTasks(ctx, ns)
+			tasks = append(tasks, nsTasks...)
+		}
 	}
 
-	// Otherwise, get all namespaces
-	nsList, err := c.client.CoreV1().Namespaces().List(ctx, metav1.ListOptions{})
-	if err != nil {
-		return nil, err
-	}
-
-	namespaces := make([]string, 0, len(nsList.Items))
-	for _, ns := range nsList.Items {
-		namespaces = append(namespaces, ns.Name)
-	}
-
-	return namespaces, nil
+	return tasks
 }
 
-// scanDatabases scans for databases of a specific type in a namespace
-func (c *Collector) scanDatabases(
-	ctx context.Context,
-	namespace string,
-	dbType DatabaseType,
-	statusMap map[string]*DatabaseStatus,
-) error {
-	var secretSelector string
+// collectAllNamespaceTasks collects tasks from all namespaces efficiently
+func (c *Collector) collectAllNamespaceTasks(ctx context.Context) []DatabaseTask {
+	var tasks []DatabaseTask
 
-	switch dbType {
-	case DatabaseTypeMySQL:
-		// #nosec G101
-		secretSelector = "apps.kubeblocks.io/cluster-type=mysql"
-	case DatabaseTypePostgreSQL:
-		// #nosec G101
-		secretSelector = "app.kubernetes.io/name=postgresql"
-	case DatabaseTypeMongoDB:
-		// #nosec G101
-		secretSelector = "apps.kubeblocks.io/component-name=mongodb"
-	case DatabaseTypeRedis:
-		// #nosec G101
-		secretSelector = "apps.kubeblocks.io/component-name=redis"
-	default:
-		return nil
+	// Define all database types
+	dbTypes := []DatabaseType{
+		DatabaseTypeMySQL,
+		DatabaseTypePostgreSQL,
+		DatabaseTypeMongoDB,
+		DatabaseTypeRedis,
 	}
 
-	// Find secrets with the appropriate labels
-	secrets, err := c.client.CoreV1().Secrets(namespace).List(ctx, metav1.ListOptions{
-		LabelSelector: secretSelector,
-	})
-	if err != nil {
-		c.logger.WithError(err).Errorf("Failed to get %s database secrets", dbType)
-		return err
-	}
+	// Use cache if available
+	if c.secretCache != nil {
+		c.logger.Debug("Using secret cache to collect tasks")
 
-	c.logger.Debugf(
-		"Found %d %s database secrets in namespace %s",
-		len(secrets.Items),
-		dbType,
-		namespace,
-	)
+		for _, dbType := range dbTypes {
+			secrets := c.secretCache.GetSecrets(dbType, c.isCredentialSecret)
 
-	for _, secret := range secrets.Items {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
+			c.logger.WithFields(log.Fields{
+				"type":  dbType,
+				"count": len(secrets),
+			}).Debug("Retrieved secrets from cache")
+
+			for _, secret := range secrets {
+				dbName := c.extractDatabaseName(secret, dbType)
+				tasks = append(tasks, DatabaseTask{
+					Namespace:    secret.Namespace,
+					DatabaseName: dbName,
+					DatabaseType: dbType,
+					Secret:       secret,
+				})
+			}
 		}
 
-		// Check if this is a connection credential secret
-		if !c.isCredentialSecret(&secret, dbType) {
+		return tasks
+	}
+
+	// Fallback to direct API calls if cache is not available
+	c.logger.Debug("Cache not available, using direct API calls")
+
+	dbTypeSelectors := map[DatabaseType]string{
+		DatabaseTypeMySQL:      "apps.kubeblocks.io/cluster-type=mysql",
+		DatabaseTypePostgreSQL: "app.kubernetes.io/name=postgresql",
+		DatabaseTypeMongoDB:    "apps.kubeblocks.io/cluster-type=mongodb",
+		DatabaseTypeRedis:      "apps.kubeblocks.io/cluster-type=redis",
+	}
+
+	// Fetch all secrets for each database type across all namespaces
+	for dbType, selector := range dbTypeSelectors {
+		secrets, err := c.client.CoreV1().Secrets("").List(ctx, metav1.ListOptions{
+			LabelSelector: selector,
+		})
+		if err != nil {
+			c.logger.WithError(err).WithField("type", dbType).
+				Error("Failed to list secrets for database type")
 			continue
 		}
 
-		// Extract database name from secret name
-		dbName := c.extractDatabaseName(&secret, dbType)
-		key := namespace + "/" + dbName
+		c.logger.WithFields(log.Fields{
+			"type":  dbType,
+			"count": len(secrets.Items),
+		}).Debug("Found secrets for database type")
 
-		c.logger.Debugf("Checking database connection: %s/%s (%s)", namespace, dbName, dbType)
+		// Process each secret
+		for i := range secrets.Items {
+			secret := &secrets.Items[i]
 
-		// Check connectivity
-		status := c.checkDatabaseConnectivity(ctx, namespace, dbName, dbType, &secret)
+			// Check if this is a credential secret
+			if !c.isCredentialSecret(secret, dbType) {
+				continue
+			}
 
-		if status.Connected {
-			c.logger.Infof("Database %s/%s (%s) is healthy", namespace, dbName, dbType)
-		} else {
-			c.logger.Warnf(
-				"Database %s/%s (%s) is unhealthy: %s",
-				namespace,
-				dbName,
-				dbType,
-				status.Error,
-			)
+			// Extract database name
+			dbName := c.extractDatabaseName(secret, dbType)
+
+			tasks = append(tasks, DatabaseTask{
+				Namespace:    secret.Namespace,
+				DatabaseName: dbName,
+				DatabaseType: dbType,
+				Secret:       secret,
+			})
+		}
+	}
+
+	return tasks
+}
+
+// collectNamespaceTasks collects tasks from a specific namespace
+func (c *Collector) collectNamespaceTasks(
+	ctx context.Context,
+	namespace string,
+) []DatabaseTask {
+	var tasks []DatabaseTask
+
+	dbTypeSelectors := map[DatabaseType]string{
+		DatabaseTypeMySQL:      "apps.kubeblocks.io/cluster-type=mysql",
+		DatabaseTypePostgreSQL: "app.kubernetes.io/name=postgresql",
+		DatabaseTypeMongoDB:    "apps.kubeblocks.io/cluster-type=mongodb",
+		DatabaseTypeRedis:      "apps.kubeblocks.io/cluster-type=redis",
+	}
+
+	for dbType, selector := range dbTypeSelectors {
+		secrets, err := c.client.CoreV1().Secrets(namespace).List(ctx, metav1.ListOptions{
+			LabelSelector: selector,
+		})
+		if err != nil {
+			c.logger.WithError(err).WithFields(log.Fields{
+				"namespace": namespace,
+				"type":      dbType,
+			}).Error("Failed to list secrets")
+
+			continue
 		}
 
+		for i := range secrets.Items {
+			secret := &secrets.Items[i]
+
+			if !c.isCredentialSecret(secret, dbType) {
+				continue
+			}
+
+			dbName := c.extractDatabaseName(secret, dbType)
+
+			tasks = append(tasks, DatabaseTask{
+				Namespace:    secret.Namespace,
+				DatabaseName: dbName,
+				DatabaseType: dbType,
+				Secret:       secret,
+			})
+		}
+	}
+
+	return tasks
+}
+
+// processDatabaseTasksConcurrently processes database tasks with controlled concurrency per type
+func (c *Collector) processDatabaseTasksConcurrently(
+	ctx context.Context,
+	tasks []DatabaseTask,
+) map[string]*DatabaseStatus {
+	// Group tasks by database type
+	tasksByType := make(map[DatabaseType][]DatabaseTask)
+	for _, task := range tasks {
+		tasksByType[task.DatabaseType] = append(tasksByType[task.DatabaseType], task)
+	}
+
+	// Process each type concurrently with type-specific concurrency limits
+	var wg sync.WaitGroup
+
+	statusChan := make(chan *DatabaseStatus, len(tasks))
+
+	for dbType, typeTasks := range tasksByType {
+		wg.Add(1)
+
+		go func(dt DatabaseType, tt []DatabaseTask) {
+			defer wg.Done()
+
+			c.processTasksWithConcurrency(ctx, dt, tt, statusChan)
+		}(dbType, typeTasks)
+	}
+
+	// Wait for all processing to complete
+	go func() {
+		wg.Wait()
+		close(statusChan)
+	}()
+
+	// Collect results
+	statusMap := make(map[string]*DatabaseStatus)
+	for status := range statusChan {
+		key := status.Namespace + "/" + status.Name
 		statusMap[key] = status
 	}
 
-	return nil
+	return statusMap
+}
+
+// processTasksWithConcurrency processes tasks for a specific database type with concurrency control
+func (c *Collector) processTasksWithConcurrency(
+	ctx context.Context,
+	dbType DatabaseType,
+	tasks []DatabaseTask,
+	statusChan chan<- *DatabaseStatus,
+) {
+	// Get concurrency limit for this database type
+	concurrency := c.getConcurrencyLimit(dbType)
+
+	// Create semaphore for concurrency control
+	sem := make(chan struct{}, concurrency)
+
+	var wg sync.WaitGroup
+
+	for _, task := range tasks {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+
+		wg.Add(1)
+
+		go func(t DatabaseTask) {
+			defer wg.Done()
+
+			// Acquire semaphore
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			// Check database connectivity
+			status := c.checkDatabaseConnectivity(
+				ctx,
+				t.Namespace,
+				t.DatabaseName,
+				t.DatabaseType,
+				t.Secret,
+			)
+
+			if status.Connected {
+				c.logger.WithFields(log.Fields{
+					"namespace": t.Namespace,
+					"database":  t.DatabaseName,
+					"type":      t.DatabaseType,
+				}).Debug("Database is healthy")
+			} else {
+				c.logger.WithFields(log.Fields{
+					"namespace": t.Namespace,
+					"database":  t.DatabaseName,
+					"type":      t.DatabaseType,
+					"error":     status.Error,
+				}).Warn("Database is unhealthy")
+			}
+
+			statusChan <- status
+		}(task)
+	}
+
+	wg.Wait()
+}
+
+// getConcurrencyLimit returns the concurrency limit for a database type
+func (c *Collector) getConcurrencyLimit(dbType DatabaseType) int {
+	switch dbType {
+	case DatabaseTypeMySQL:
+		return c.config.MySQLConcurrency
+	case DatabaseTypePostgreSQL:
+		return c.config.PostgreSQLConcurrency
+	case DatabaseTypeMongoDB:
+		return c.config.MongoDBConcurrency
+	case DatabaseTypeRedis:
+		return c.config.RedisConcurrency
+	default:
+		return 10 // fallback
+	}
+}
+
+// calculateStatistics calculates overall statistics from status map
+func (c *Collector) calculateStatistics(statusMap map[string]*DatabaseStatus) struct {
+	total       int
+	available   int
+	unavailable int
+} {
+	stats := struct {
+		total       int
+		available   int
+		unavailable int
+	}{}
+
+	stats.total = len(statusMap)
+	for _, status := range statusMap {
+		if status.Connected {
+			stats.available++
+		} else {
+			stats.unavailable++
+		}
+	}
+
+	return stats
 }
 
 // isCredentialSecret checks if the secret is a credential secret for the database type
 func (c *Collector) isCredentialSecret(secret *corev1.Secret, dbType DatabaseType) bool {
 	switch dbType {
-	case DatabaseTypeMySQL, DatabaseTypePostgreSQL:
+	case DatabaseTypeMySQL, DatabaseTypePostgreSQL, DatabaseTypeMongoDB, DatabaseTypeRedis:
 		suffix := "-conn-credential"
-		return len(secret.Name) > len(suffix) &&
-			secret.Name[len(secret.Name)-len(suffix):] == suffix
-	case DatabaseTypeMongoDB:
-		suffix := "-mongodb-account-root"
-		return len(secret.Name) > len(suffix) &&
-			secret.Name[len(secret.Name)-len(suffix):] == suffix
-	case DatabaseTypeRedis:
-		suffix := "-redis-account-default"
 		return len(secret.Name) > len(suffix) &&
 			secret.Name[len(secret.Name)-len(suffix):] == suffix
 	}
@@ -287,20 +514,11 @@ func (c *Collector) isCredentialSecret(secret *corev1.Secret, dbType DatabaseTyp
 // extractDatabaseName extracts the database name from the secret name
 func (c *Collector) extractDatabaseName(secret *corev1.Secret, dbType DatabaseType) string {
 	switch dbType {
-	case DatabaseTypeMySQL, DatabaseTypePostgreSQL:
+	case DatabaseTypeMySQL, DatabaseTypePostgreSQL, DatabaseTypeMongoDB, DatabaseTypeRedis:
 		// Remove "-conn-credential" suffix
-		if len(secret.Name) > len("-conn-credential") {
-			return secret.Name[:len(secret.Name)-len("-conn-credential")]
-		}
-	case DatabaseTypeMongoDB:
-		// Remove "-mongodb-account-root" suffix
-		if len(secret.Name) > len("-mongodb-account-root") {
-			return secret.Name[:len(secret.Name)-len("-mongodb-account-root")]
-		}
-	case DatabaseTypeRedis:
-		// Remove "-redis-account-default" suffix
-		if len(secret.Name) > len("-redis-account-default") {
-			return secret.Name[:len(secret.Name)-len("-redis-account-default")]
+		suffix := "-conn-credential"
+		if len(secret.Name) > len(suffix) {
+			return secret.Name[:len(secret.Name)-len(suffix)]
 		}
 	}
 
@@ -322,11 +540,35 @@ func (c *Collector) checkDatabaseConnectivity(
 		Connected:    false,
 	}
 
-	// Create context with timeout
+	startTime := time.Now()
+
+	// Preflight checks (fast-fail)
+	if c.preflightChecker != nil {
+		if preflightErr := c.preflightChecker.CheckDatabase(
+			ctx,
+			namespace,
+			dbName,
+			dbType,
+			secret,
+		); preflightErr != nil {
+			status.ResponseTime = time.Since(startTime).Seconds()
+			status.Connected = false
+			status.Error = preflightErr.Error()
+			c.logger.WithFields(log.Fields{
+				"namespace": namespace,
+				"database":  dbName,
+				"type":      dbType,
+				"errorType": preflightErr.Type,
+				"error":     preflightErr.Message,
+			}).Warn("Database preflight check failed (fast-fail)")
+
+			return status
+		}
+	}
+
+	// Create context with timeout for actual connection check
 	checkCtx, cancel := context.WithTimeout(ctx, c.config.CheckTimeout)
 	defer cancel()
-
-	startTime := time.Now()
 
 	var err error
 	switch dbType {
@@ -335,9 +577,9 @@ func (c *Collector) checkDatabaseConnectivity(
 	case DatabaseTypePostgreSQL:
 		err = c.checkPostgreSQLConnectivity(checkCtx, namespace, secret)
 	case DatabaseTypeMongoDB:
-		err = c.checkMongoDBConnectivity(checkCtx, namespace, dbName, secret)
+		err = c.checkMongoDBConnectivity(checkCtx, namespace, secret)
 	case DatabaseTypeRedis:
-		err = c.checkRedisConnectivity(checkCtx, namespace, dbName, secret)
+		err = c.checkRedisConnectivity(checkCtx, namespace, secret)
 	default:
 		err = nil
 	}
@@ -348,9 +590,10 @@ func (c *Collector) checkDatabaseConnectivity(
 		status.Connected = false
 		status.Error = err.Error()
 		c.logger.WithFields(log.Fields{
-			"namespace": namespace,
-			"database":  dbName,
-			"type":      dbType,
+			"namespace":     namespace,
+			"database":      dbName,
+			"type":          dbType,
+			"response_time": status.ResponseTime,
 		}).WithError(err).Warn("Database connectivity check failed")
 	} else {
 		status.Connected = true
@@ -371,6 +614,7 @@ func (c *Collector) collect(ch chan<- prometheus.Metric) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
+	// Per-database metrics
 	for _, status := range c.dbConnectivity {
 		// Connectivity metric
 		connectivityValue := 0.0
@@ -397,4 +641,81 @@ func (c *Collector) collect(ch chan<- prometheus.Metric) {
 			string(status.DatabaseType),
 		)
 	}
+
+	// Aggregate statistics by database type
+	typeStats := c.calculateTypeStatistics()
+
+	// Emit statistics metrics for each database type
+	for dbType, stats := range typeStats {
+		ch <- prometheus.MustNewConstMetric(
+			c.totalDatabasesGauge,
+			prometheus.GaugeValue,
+			float64(stats.total),
+			string(dbType),
+		)
+
+		ch <- prometheus.MustNewConstMetric(
+			c.availableDatabasesGauge,
+			prometheus.GaugeValue,
+			float64(stats.available),
+			string(dbType),
+		)
+
+		ch <- prometheus.MustNewConstMetric(
+			c.unavailableDatabasesGauge,
+			prometheus.GaugeValue,
+			float64(stats.unavailable),
+			string(dbType),
+		)
+	}
+
+	// Also emit overall totals with type="all"
+	ch <- prometheus.MustNewConstMetric(
+		c.totalDatabasesGauge,
+		prometheus.GaugeValue,
+		float64(c.stats.total),
+		"all",
+	)
+
+	ch <- prometheus.MustNewConstMetric(
+		c.availableDatabasesGauge,
+		prometheus.GaugeValue,
+		float64(c.stats.available),
+		"all",
+	)
+
+	ch <- prometheus.MustNewConstMetric(
+		c.unavailableDatabasesGauge,
+		prometheus.GaugeValue,
+		float64(c.stats.unavailable),
+		"all",
+	)
+}
+
+// calculateTypeStatistics calculates statistics per database type
+func (c *Collector) calculateTypeStatistics() map[DatabaseType]struct {
+	total       int
+	available   int
+	unavailable int
+} {
+	typeStats := make(map[DatabaseType]struct {
+		total       int
+		available   int
+		unavailable int
+	})
+
+	for _, status := range c.dbConnectivity {
+		stats := typeStats[status.DatabaseType]
+
+		stats.total++
+		if status.Connected {
+			stats.available++
+		} else {
+			stats.unavailable++
+		}
+
+		typeStats[status.DatabaseType] = stats
+	}
+
+	return typeStats
 }

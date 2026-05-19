@@ -16,6 +16,14 @@ To install the chart with the release name `sealos-state-metrics`:
 helm install sealos-state-metrics ./deploy/charts/sealos-state-metrics
 ```
 
+To install as a `Deployment` with multiple replicas:
+
+```bash
+helm install sealos-state-metrics ./deploy/charts/sealos-state-metrics \
+  --set deploymentMode=deployment \
+  --set replicaCount=3
+```
+
 To install in a specific namespace:
 
 ```bash
@@ -36,10 +44,19 @@ The following table lists the configurable parameters of the chart and their def
 
 | Parameter | Description | Default |
 |-----------|-------------|---------|
+| `deploymentMode` | Workload type: `daemonset` or `deployment` | `daemonset` |
 | `replicaCount` | Number of replicas | `1` |
-| `image.repository` | Image repository | `ghcr.io/labring/sealos-state-metrics` |
-| `image.tag` | Image tag | `""` (uses appVersion) |
-| `image.pullPolicy` | Image pull policy | `IfNotPresent` |
+| `image` | Image reference | `ghcr.io/labring/sealos-state-metrics:latest` |
+| `imagePullPolicy` | Image pull policy | `IfNotPresent` |
+| `updateStrategy.maxUnavailable` | Maximum unavailable pods during rolling update | `25%` |
+
+### Scheduling
+
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `scheduling.preferDifferentNodes.enabled` | Add soft pod anti-affinity in `deployment` mode | `true` |
+| `scheduling.preferDifferentNodes.topologyKey` | Topology key used for pod spreading preference | `kubernetes.io/hostname` |
+| `scheduling.preferDifferentNodes.weight` | Weight for the preferred anti-affinity rule | `100` |
 
 ### Service Account
 
@@ -103,12 +120,22 @@ The following table lists the configurable parameters of the chart and their def
 
 | Parameter | Description | Default |
 |-----------|-------------|---------|
-| `config.domain.enabled` | Enable domain collector | `true` |
-| `config.domain.domains` | List of domains to check | `[]` |
-| `config.domain.checkTimeout` | HTTP check timeout | `5s` |
-| `config.domain.checkInterval` | Check interval | `5m` |
-| `config.domain.includeCertCheck` | Include certificate checks | `true` |
-| `config.domain.includeHTTPCheck` | Include HTTP checks | `true` |
+| `collectors.domain.domains` | List of domains to check. Supports mixed string entries and object entries with `endpoint` and `skipTLSVerify` | `[]` |
+| `collectors.domain.checkTimeout` | HTTP and TLS check timeout | `30s` |
+| `collectors.domain.checkInterval` | Check interval | `1m` |
+| `collectors.domain.dialRetries` | Number of connection attempts for HTTP and certificate checks. HTTPS attempts include both TCP dial and TLS handshake | `3` |
+| `collectors.domain.includeIPv4` | Include IPv4 addresses returned by DNS | `true` |
+| `collectors.domain.includeIPv6` | Include IPv6 addresses returned by DNS | `true` |
+| `collectors.domain.includeCertCheck` | Include certificate checks | `true` |
+| `collectors.domain.includeHTTPCheck` | Include HTTP checks | `true` |
+
+Notes:
+
+- String entry example: `example.com`
+- Object entry example: `{ endpoint: internal.example.local:8443, skipTLSVerify: true }`
+- `includeIPv4` and `includeIPv6` are global Domain collector switches, not per-domain options
+- `skipTLSVerify` applies to both HTTPS checks and certificate checks for that domain
+- The env var `COLLECTORS_DOMAIN_DOMAINS` only supports legacy comma-separated string entries and overrides YAML `domains`
 
 #### Node Collector
 
@@ -153,17 +180,30 @@ The following table lists the configurable parameters of the chart and their def
 replicaCount: 2
 
 config:
-  logLevel: debug
+  logging:
+    level: debug
+
+collectors:
   domain:
-    enabled: true
     domains:
       - example.com
+      - endpoint: internal.example.local:8443
+        skipTLSVerify: true
+        path: /healthz?ready=true
+        method: GET
+        headers:
+          X-Probe: sealos-state-metrics
+        expectedStatusCodes: [200, 204]
       - test.com
-    checkInterval: 10m
+    checkTimeout: 30s
+    checkInterval: 1m
+    dialRetries: 3
+    includeIPv4: true
+    includeIPv6: true
 
-  leaderElection:
-    enabled: true
-    namespace: sealos-system
+leaderElection:
+  enabled: true
+  namespace: sealos-system
 
 serviceMonitor:
   enabled: true

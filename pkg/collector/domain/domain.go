@@ -14,7 +14,7 @@ import (
 type Collector struct {
 	*base.BaseCollector
 
-	config  *Config
+	runtime *runtimeConfig
 	checker *DomainChecker
 	logger  *log.Entry
 
@@ -24,6 +24,7 @@ type Collector struct {
 
 	// Metrics
 	domainHealth       *prometheus.Desc
+	domainDNSStatus    *prometheus.Desc
 	domainStatus       *prometheus.Desc
 	domainCertExpiry   *prometheus.Desc
 	domainResponseTime *prometheus.Desc
@@ -35,6 +36,12 @@ func (c *Collector) initMetrics(namespace string) {
 		prometheus.BuildFQName(namespace, "domain", "health"),
 		"Domain-level health metrics",
 		[]string{"domain", "type"},
+		nil,
+	)
+	c.domainDNSStatus = prometheus.NewDesc(
+		prometheus.BuildFQName(namespace, "domain", "dns_status"),
+		"Domain DNS status (1=ok, 0=error)",
+		[]string{"domain", "error_type"},
 		nil,
 	)
 	c.domainStatus = prometheus.NewDesc(
@@ -58,6 +65,7 @@ func (c *Collector) initMetrics(namespace string) {
 
 	// Register descriptors
 	c.MustRegisterDesc(c.domainHealth)
+	c.MustRegisterDesc(c.domainDNSStatus)
 	c.MustRegisterDesc(c.domainStatus)
 	c.MustRegisterDesc(c.domainCertExpiry)
 	c.MustRegisterDesc(c.domainResponseTime)
@@ -70,17 +78,17 @@ func (c *Collector) HasSynced() bool {
 
 // Interval returns the polling interval
 func (c *Collector) Interval() time.Duration {
-	return c.config.CheckInterval
+	return c.runtime.checkInterval
 }
 
 // Poll performs one check cycle
 func (c *Collector) Poll(ctx context.Context) error {
-	if len(c.config.Domains) == 0 {
+	if len(c.runtime.domains) == 0 {
 		c.logger.Debug("No domains configured for monitoring")
 		return nil
 	}
 
-	c.logger.WithField("count", len(c.config.Domains)).Info("Starting domain health checks")
+	c.logger.WithField("count", len(c.runtime.domains)).Info("Starting domain health checks")
 
 	// Create new maps to store results
 	newIPs := make(map[string]*IPHealth)
@@ -90,7 +98,7 @@ func (c *Collector) Poll(ctx context.Context) error {
 
 	// Check domains concurrently
 	var wg sync.WaitGroup
-	for _, domain := range c.config.Domains {
+	for _, domain := range c.runtime.domains {
 		wg.Go(func() {
 			domainHealth, ipHealths := c.checker.CheckIPs(ctx, domain, c.logger)
 
@@ -98,7 +106,7 @@ func (c *Collector) Poll(ctx context.Context) error {
 			mu.Lock()
 
 			// Store domain-level health
-			newDomains[domain] = domainHealth
+			newDomains[domain.endpoint] = domainHealth
 
 			// Store IP-level health
 			for _, ipHealth := range ipHealths {
@@ -118,14 +126,14 @@ func (c *Collector) Poll(ctx context.Context) error {
 	c.domains = newDomains
 	c.mu.Unlock()
 
-	c.logger.WithField("count", len(c.config.Domains)).Info("Domain health checks completed")
+	c.logger.WithField("count", len(c.runtime.domains)).Info("Domain health checks completed")
 
 	return nil
 }
 
 // pollLoop runs the polling loop
 func (c *Collector) pollLoop(ctx context.Context) {
-	ticker := time.NewTicker(c.config.CheckInterval)
+	ticker := time.NewTicker(c.runtime.checkInterval)
 	defer ticker.Stop()
 
 	// Do initial check
@@ -188,10 +196,28 @@ func (c *Collector) collect(ch chan<- prometheus.Metric) {
 		)
 	}
 
+	// Emit domain-level DNS status once per domain.
+	emittedDNS := make(map[string]struct{}, len(c.ips))
+	for _, ipHealth := range c.ips {
+		if ipHealth.DNSChecked {
+			if _, exists := emittedDNS[ipHealth.Domain]; !exists {
+				emittedDNS[ipHealth.Domain] = struct{}{}
+
+				ch <- prometheus.MustNewConstMetric(
+					c.domainDNSStatus,
+					prometheus.GaugeValue,
+					boolToFloat64(ipHealth.DNSOk),
+					ipHealth.Domain,
+					string(ipHealth.DNSErrorType),
+				)
+			}
+		}
+	}
+
 	// Emit IP-level metrics
 	for _, ipHealth := range c.ips {
 		// HTTP status
-		if c.config.IncludeHTTPCheck {
+		if c.runtime.includeHTTPCheck && ipHealth.HTTPChecked {
 			ch <- prometheus.MustNewConstMetric(
 				c.domainStatus,
 				prometheus.GaugeValue,
@@ -214,7 +240,7 @@ func (c *Collector) collect(ch chan<- prometheus.Metric) {
 		}
 
 		// Certificate status
-		if c.config.IncludeCertCheck {
+		if c.runtime.includeCertCheck && ipHealth.CertChecked {
 			ch <- prometheus.MustNewConstMetric(
 				c.domainStatus,
 				prometheus.GaugeValue,

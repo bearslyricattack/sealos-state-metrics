@@ -6,6 +6,18 @@ imagePullSecrets: []
 nameOverride: ""
 fullnameOverride: ""
 
+deploymentMode: daemonset
+replicaCount: 1
+
+scheduling:
+  preferDifferentNodes:
+    enabled: true
+    topologyKey: kubernetes.io/hostname
+    weight: 100
+
+updateStrategy:
+  maxUnavailable: 25%
+
 serviceAccount:
   create: true
   annotations: {}
@@ -63,7 +75,7 @@ serviceMonitor:
   relabelings: []
 
 vmServiceScrape:
-  enabled: false
+  enabled: true
   namespace: ""
   labels: {}
   interval: 30s
@@ -96,7 +108,7 @@ config:
     burst: 100
 
   metrics:
-    namespace: ""
+    namespace: "sealos"
 
   logging:
     level: "info"
@@ -117,7 +129,15 @@ leaderElection:
 # Enabled collectors
 # Examples: [domain, node, imagepull, zombie, cloudbalance, lvm, database, crd]
 enabledCollectors:
+  - domain
+  - node
+  - imagepull
+  - zombie
   - lvm
+  - cloudbalance
+  - userbalance
+  - crds
+  - database
 
 # Instance identity (optional, defaults to NODE_NAME > POD_NAME > auto-detected)
 identity: ""
@@ -125,9 +145,24 @@ identity: ""
 # Collectors configuration
 collectors:
   domain:
+    # Supports legacy string entries and object entries with per-domain HTTP/TLS options.
+    # Example:
+    # domains:
+    #   - example.com
+    #   - endpoint: internal.example.local:8443
+    #     skipTLSVerify: true
+    #     followHTTPRedirects: false
+    #     path: /healthz?ready=true
+    #     method: GET
+    #     headers:
+    #       X-Probe: sealos-state-metrics
+    #     expectedStatusCodes: [200, 204]
     domains: []
-    checkTimeout: "5s"
-    checkInterval: "5m"
+    checkTimeout: "30s"
+    checkInterval: "1m"
+    dialRetries: 3
+    includeIPv4: true
+    includeIPv6: true
     includeCertCheck: true
     includeHTTPCheck: true
 
@@ -150,12 +185,103 @@ collectors:
     checkTimeout: "10s"
     checkInterval: "5m"
     namespaces: []  # Empty means all namespaces
+    # Concurrency settings for database connection checks
+    # Controls maximum concurrent connections per database type
+    # Higher values allow faster checking of many databases but consume more resources
+    mysqlConcurrency: 50        # Default: 50 concurrent MySQL connections
+    postgresqlConcurrency: 50   # Default: 50 concurrent PostgreSQL connections
+    mongodbConcurrency: 50      # Default: 50 concurrent MongoDB connections
+    redisConcurrency: 100       # Default: 100 concurrent Redis connections (Redis is typically faster)
 
-  crd:
-    updateInterval: "30s"
-    namespaces: []  # Empty means all namespaces
+  crds:
+    crds:
+      - name: kubeblocks-cluster
+        gvr:
+          group: apps.kubeblocks.io
+          version: v1alpha1
+          resource: clusters
+        namespaces: [ ]
+        resyncPeriod: 10m
+        commonLabels:
+          name: metadata.name
+          namespace: metadata.namespace
+        metrics:
+          - type: info
+            name: kubeblocks_cluster_info
+            help: "Cluster information"
+            labels:
+              cluster_def: spec.clusterDefinitionRef
+              cluster_version: spec.clusterVersionRef
 
-# Pod configuration
+          - type: count
+            name: kubeblocks_phase_count
+            help: "kubeblocks phase count"
+            path: status.phase
+
+          - type: string_state
+            name: kubeblocks_cluster_status
+            help: "kubeblocks cluster status"
+            path: status.phase
+
+      - name: kubeblocks-backup
+        gvr:
+          group: dataprotection.kubeblocks.io
+          version: v1alpha1
+          resource: backups
+        namespaces: [ ]
+        resyncPeriod: 10m
+
+        commonLabels:
+          name: metadata.name
+          namespace: metadata.namespace
+
+        metrics:
+          - type: info
+            name: kubeblocks_backup_info
+            help: "Backup information"
+            labels:
+              backup_method: spec.method
+              backup_policy_name: spec.backupPolicyName
+
+          - type: count
+            name: kubeblocks_backup_count
+            help: "kubeblocks backup count"
+            path: status.phase
+
+          - type: string_state
+            name: kubeblocks_backup_status
+            help: "kubeblocks backup status"
+            path: status.phase
+
+      - name: devbox
+        gvr:
+          group: devbox.sealos.io
+          version: v1alpha2
+          resource: devboxes
+        namespaces: [ ]
+        resyncPeriod: 10m
+
+        commonLabels:
+          name: metadata.name
+          namespace: metadata.namespace
+
+        metrics:
+          - type: info
+            name: devbox_info
+            help: "Devbox information"
+            labels:
+              image: spec.image
+
+          - type: count
+            name: devbox_phase_count
+            help: "devbox phase count"
+            path: status.phase
+
+          - type: string_state
+            name: devbox_cluster_status
+            help: "devbox cluster status"
+            path: status.phase
+
 podAnnotations: {}
 podSecurityContext: {}
 securityContext:

@@ -113,15 +113,36 @@ collectors:
 
   # Domain collector - monitors domain health
   domain:
-    # List of domains to monitor
+    # List of domains to monitor.
+    # Supports both legacy string entries and object entries with per-domain TLS options.
     domains:
-      - example.com
-      - api.example.com
-      - www.example.com
+      - endpoint: example.com
+        skipTLSVerify: false
+      - endpoint: internal.example.local:8443
+        skipTLSVerify: true
+        path: /healthz?ready=true
+        method: GET
+        headers:
+          X-Probe: sealos-state-metrics
+        expectedStatusCodes:
+          - 200
+          - 204
+    # Legacy format is still supported:
+    # domains:
+    #   - example.com
+    #   - api.example.com
+    #   - www.example.com
     # Check timeout for each domain
-    checkTimeout: "5s"
+    checkTimeout: "30s"
     # Check interval (how often to check all domains)
-    checkInterval: "5m"
+    checkInterval: "1m"
+    # Number of connection attempts for HTTP and certificate checks.
+    # HTTPS retries include both TCP dial and TLS handshake.
+    dialRetries: 3
+    # Include IPv4 addresses resolved from DNS
+    includeIPv4: true
+    # Include IPv6 addresses resolved from DNS
+    includeIPv6: true
     # Include TLS certificate validation
     includeCertCheck: true
     # Include HTTP connectivity check
@@ -186,7 +207,7 @@ collectors:
   # Automatically discovers databases from KubeBlocks clusters in the cluster
   # Supports: MySQL, PostgreSQL, MongoDB, Redis
   database:
-    # Check interval for database connectivity tests
+    # Check interval for database connectivity checks
     checkInterval: "5m"
     # Timeout for each database connection attempt
     checkTimeout: "10s"
@@ -208,6 +229,7 @@ collectors:
 #
 # Collector config: Use prefix COLLECTORS_<COLLECTOR>_
 #   COLLECTORS_DOMAIN_CHECK_INTERVAL=10m
+#   COLLECTORS_DOMAIN_DIAL_RETRIES=3
 #   COLLECTORS_DOMAIN_DOMAINS=example.com,test.com
 #   COLLECTORS_POD_RESTART_THRESHOLD=10
 #   COLLECTORS_ZOMBIE_CHECK_INTERVAL=1m
