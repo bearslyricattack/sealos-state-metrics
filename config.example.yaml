@@ -70,15 +70,17 @@ performance:
   informerResyncPeriod: "10m"
 
 # List of enabled collectors
-# Available collectors: domain, node, pod, imagepull, zombie, cloudbalance, database
+# Available collectors: domain, registryproxy, node, pod, imagepull, zombie, cloudbalance, database, cockroachlicense
 enabledCollectors:
   - domain
+  # - registryproxy  # Disabled by default
   - node
   - pod
   - imagepull
   - zombie
   # - cloudbalance  # Disabled by default
   # - database      # Disabled by default
+  # - cockroachlicense  # Disabled by default
 
 # Instance identity (optional, defaults to POD_NAME env var, IP, hostname, or random ID)
 # identity: "custom-instance-id"
@@ -119,6 +121,9 @@ collectors:
       - endpoint: example.com
         skipTLSVerify: false
       - endpoint: internal.example.local:8443
+        ips:
+          - 10.0.0.12
+          - 10.0.0.13
         skipTLSVerify: true
         path: /healthz?ready=true
         method: GET
@@ -147,6 +152,29 @@ collectors:
     includeCertCheck: true
     # Include HTTP connectivity check
     includeHTTPCheck: true
+
+  # RegistryProxy collector - monitors Docker registry proxy availability
+  registryproxy:
+    # Registry proxy endpoints to monitor.
+    registries:
+      - endpoint: http://67.21.84.122:5000
+        info: "public mirror proxy"
+        repository: library/busybox
+        reference: latest
+        manifestAcceptHeader: application/vnd.docker.distribution.manifest.v2+json
+      - endpoint: http://registry-proxy.example.com:5000
+        info: "internal proxy"
+        ips:
+          - 10.0.0.12
+          - 10.0.0.13
+        repository: library/alpine
+        reference: latest
+        headers:
+          X-Probe: sealos-state-metrics
+    # Check timeout for each registry proxy endpoint
+    checkTimeout: "30s"
+    # Check interval (how often to check all registry proxies)
+    checkInterval: "1m"
 
   # Node collector - monitors Kubernetes node conditions
   node:
@@ -216,6 +244,19 @@ collectors:
       # - ns-kkeniczm
       # - default
       # - production
+
+  # Cockroach license collector - monitors CockroachDB enterprise.license
+  # The raw license string is queried and decoded locally, but never exposed.
+  cockroachlicense:
+    checkInterval: "5m"
+    checkTimeout: "10s"
+    clusters:
+      # Secure CockroachDB example:
+      # - name: production
+      #   dsn: "postgresql://root@cockroach-public.default.svc:26257/defaultdb?sslmode=verify-full&sslrootcert=/certs/ca.crt&sslcert=/certs/client.root.crt&sslkey=/certs/client.root.key"
+      # Insecure test cluster example:
+      # - name: dev
+      #   dsn: "postgresql://root@cockroach-public.default.svc:26257/defaultdb?sslmode=disable"
 
 # ============================================================================
 # Environment Variable Overrides
