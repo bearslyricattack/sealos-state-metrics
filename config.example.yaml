@@ -70,7 +70,7 @@ performance:
   informerResyncPeriod: "10m"
 
 # List of enabled collectors
-# Available collectors: domain, registryproxy, node, pod, imagepull, zombie, cloudbalance, database, cockroachlicense
+# Available collectors: domain, registryproxy, node, pod, imagepull, zombie, cloudbalance, database, cockroachlicense, billing
 enabledCollectors:
   - domain
   # - registryproxy  # Disabled by default
@@ -97,6 +97,14 @@ collectors:
     # user postgres dsn
     database:
       dsn: "postgresql://username:password@www.example.com:port/defaultdb"
+      # Optional regional database used only to map userUid to UserCr.crName.
+      # When empty, all discovered users are emitted with owner="". When set,
+      # only users mapped by this region's UserCr table are emitted.
+      localDsn: ""
+    # Auto-discover users whose Account.balance - Account.deduction_balance is
+    # greater than 0. Users listed below are always collected and override
+    # labels for matching auto-discovered users.
+    positiveBalanceUsers: false
     # sealos user list
     users:
       - region: us-west-2
@@ -112,6 +120,18 @@ collectors:
         owner: bob.wilson@example.com
         type: enterprise
         level: platinum
+
+  # Billing collector - reads finalized Sealos billing records from MongoDB.
+  # Reads the previous complete hourly billing window. CPU resource_usage is mCPU; divide by 1000 for cores.
+  billing:
+    scrapeInterval: "5m"
+    queryTimeout: "30s"
+    enableOwnerMetrics: false
+    mongo:
+      uri: "mongodb://username:password@mongodb.account-system.svc:27017"
+      database: "sealos-resources"
+      billingCollection: "billing"
+      propertiesCollection: "properties"
 
   # Domain collector - monitors domain health
   domain:
