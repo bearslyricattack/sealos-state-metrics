@@ -22,9 +22,7 @@ concurrency:
 
 env:
   DOCKERHUB_REPO: ${{ secrets.DOCKERHUB_REPO != '' && secrets.DOCKERHUB_REPO || secrets.DOCKERHUB_USERNAME != '' && format('{0}/{1}', secrets.DOCKERHUB_USERNAME, 'sealos-state-metrics') || '' }}
-  GHCR_REPO: ghcr.io/${{ github.repository }}
-  ALIYUN_REGISTRY: ${{ secrets.ALIYUN_REGISTRY }}
-  ALIYUN_REPO: ${{ secrets.ALIYUN_REPO != '' && secrets.ALIYUN_REPO || (secrets.ALIYUN_REGISTRY != '' && secrets.ALIYUN_USERNAME != '') && format('{0}/{1}/{2}', secrets.ALIYUN_REGISTRY, secrets.ALIYUN_USERNAME, 'sealos-state-metrics') || '' }}
+  GHCR_REPO: ghcr.io/${{ github.repository }}/${{ github.event.repository.name }}
 
 jobs:
   build-docker-images:
@@ -54,14 +52,6 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Login to Aliyun Registry
-        uses: docker/login-action@v3
-        if: ${{ github.event_name != 'pull_request' && github.actor != 'dependabot[bot]' && env.ALIYUN_REGISTRY }}
-        with:
-          registry: ${{ env.ALIYUN_REGISTRY }}
-          username: ${{ secrets.ALIYUN_USERNAME }}
-          password: ${{ secrets.ALIYUN_PASSWORD }}
-
       - name: Checkout
         uses: actions/checkout@v6
 
@@ -75,7 +65,6 @@ jobs:
           images: |
             ${{ env.DOCKERHUB_REPO }}
             ${{ env.GHCR_REPO }}
-            ${{ env.ALIYUN_REPO }}
 
       - name: Build for ${{ matrix.arch }}
         id: build
@@ -84,7 +73,7 @@ jobs:
           context: .
           labels: ${{ steps.meta.outputs.labels }}
           platforms: linux/${{ matrix.arch }}
-          outputs: type=image,"name=${{ env.GHCR_REPO }}${{ env.DOCKERHUB_REPO && format(',{0}', env.DOCKERHUB_REPO) }}${{ env.ALIYUN_REPO && format(',{0}', env.ALIYUN_REPO) }}",name-canonical=true,push-by-digest=${{ github.event_name != 'pull_request' && github.actor != 'dependabot[bot]' }},push=${{ github.event_name != 'pull_request' && github.actor != 'dependabot[bot]' }}
+          outputs: type=image,"name=${{ env.GHCR_REPO }}${{ env.DOCKERHUB_REPO && format(',{0}', env.DOCKERHUB_REPO) }}",name-canonical=true,push-by-digest=${{ github.event_name != 'pull_request' && github.actor != 'dependabot[bot]' }},push=${{ github.event_name != 'pull_request' && github.actor != 'dependabot[bot]' }}
 
       - name: Export digest
         run: |
@@ -122,14 +111,6 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Login to Aliyun Registry
-        uses: docker/login-action@v3
-        if: ${{ env.ALIYUN_REGISTRY }}
-        with:
-          registry: ${{ env.ALIYUN_REGISTRY }}
-          username: ${{ secrets.ALIYUN_USERNAME }}
-          password: ${{ secrets.ALIYUN_PASSWORD }}
-
       - name: Download digests
         uses: actions/download-artifact@v7
         with:
@@ -147,7 +128,6 @@ jobs:
           images: |
             ${{ env.DOCKERHUB_REPO }}
             ${{ env.GHCR_REPO }}
-            ${{ env.ALIYUN_REPO }}
           tags: |
             type=ref,event=branch
             type=ref,event=pr
@@ -197,9 +177,6 @@ jobs:
           if [ -n "${DOCKERHUB_REPO}" ]; then
             images+=("${DOCKERHUB_REPO}-cluster")
           fi
-          if [ -n "${ALIYUN_REPO}" ]; then
-            images+=("${ALIYUN_REPO}-cluster")
-          fi
 
           {
             echo "images<<EOF"
@@ -245,14 +222,6 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Login to Aliyun Registry
-        uses: docker/login-action@v3
-        if: ${{ env.ALIYUN_REGISTRY }}
-        with:
-          registry: ${{ env.ALIYUN_REGISTRY }}
-          username: ${{ secrets.ALIYUN_USERNAME }}
-          password: ${{ secrets.ALIYUN_PASSWORD }}
-
       - name: Build images
         uses: docker/build-push-action@v6
         with:
@@ -262,3 +231,86 @@ jobs:
           platforms: linux/amd64,linux/arm64
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
+
+  sync-image-oss:
+    name: Sync Sealos Packages to OSS (${{ matrix.arch }})
+    permissions:
+      contents: read
+      packages: read
+    needs: release-sealos-images
+    runs-on: ubuntu-24.04
+    if: ${{ github.event_name != 'pull_request' && github.actor != 'dependabot[bot]' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+    steps:
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata (tags, labels) for Docker
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.GHCR_REPO }}-cluster
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=ref,event=tag
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=sha
+
+      - name: Save sealos image package
+        run: |
+          set -euo pipefail
+          IMAGE_TAG="${{ steps.meta.outputs.version }}"
+          TAR_NAME="state-metrics-cluster-${IMAGE_TAG}-${{ matrix.arch }}.tar.gz"
+
+          mkdir -p release-assets
+          docker pull --platform "linux/${{ matrix.arch }}" "${GHCR_REPO}-cluster:${IMAGE_TAG}"
+          docker save "${GHCR_REPO}-cluster:${IMAGE_TAG}" | gzip > "release-assets/${TAR_NAME}"
+          ls -lh "release-assets/${TAR_NAME}"
+
+      - name: Install oss tools
+        run: |
+          set -euo pipefail
+          sudo -v
+          curl -fsSL https://gosspublic.alicdn.com/ossutil/install.sh | sudo bash
+
+      - name: Sync to OSS
+        run: |
+          set -euo pipefail
+          IMAGE_TAG="${{ steps.meta.outputs.version }}"
+          SHORT_SHA="$(echo "${GITHUB_SHA}" | cut -c1-7)"
+          REF_NAME="${{ github.ref_name }}"
+          REF_TYPE="${{ github.ref_type }}"
+          SAFE_REF_NAME="${REF_NAME//\//-}"
+
+          if [[ "${REF_TYPE}" == "tag" && "${REF_NAME}" == v* ]]; then
+            OSS_PREFIX="release/${REF_NAME}"
+            OSS_TAG="${REF_NAME}"
+          else
+            OSS_PREFIX="ci/${SAFE_REF_NAME}/${SHORT_SHA}"
+            OSS_TAG="${SAFE_REF_NAME}-${SHORT_SHA}"
+          fi
+
+          TAR_NAME="release-assets/state-metrics-cluster-${IMAGE_TAG}-${{ matrix.arch }}.tar.gz"
+          OSS_TAR_NAME="state-metrics-cluster-${OSS_TAG}-${{ matrix.arch }}.tar.gz"
+
+          md5sum "${TAR_NAME}" > "${TAR_NAME}.md5"
+          ossutil64 cp -f -e "${{ secrets.OSS_ENDPOINT }}" \
+            -i "${{ secrets.OSS_ACCESS_KEY_ID }}" \
+            -k "${{ secrets.OSS_ACCESS_KEY_SECRET }}" \
+            "${TAR_NAME}" \
+            "oss://${{ vars.OSS_BUCKET }}/${OSS_PREFIX}/${OSS_TAR_NAME}"
+          ossutil64 cp -f -e "${{ secrets.OSS_ENDPOINT }}" \
+            -i "${{ secrets.OSS_ACCESS_KEY_ID }}" \
+            -k "${{ secrets.OSS_ACCESS_KEY_SECRET }}" \
+            "${TAR_NAME}.md5" \
+            "oss://${{ vars.OSS_BUCKET }}/${OSS_PREFIX}/${OSS_TAR_NAME}.md5"
