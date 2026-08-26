@@ -134,6 +134,7 @@ collectors:
 |-----------|------|-----------------|-------------|
 | **[domain](pkg/collector/domain/)** | Polling | Yes | Domain health checks, TLS certificate expiry, HTTP connectivity, DNS resolution |
 | **[node](pkg/collector/node/)** | Informer | Yes | Kubernetes node conditions (Ready, MemoryPressure, DiskPressure, etc.) |
+| **[namespace](pkg/collector/namespace/)** | Informer | Yes | Kubernetes namespaces missing one or more configured labels |
 | **[database](pkg/collector/database/)** | Polling | Yes | Database connectivity monitoring (MySQL, PostgreSQL, MongoDB, Redis) via KubeBlocks |
 | **[cockroachlicense](pkg/collector/cockroachlicense/)** | Polling | Yes | CockroachDB license metadata and expiry monitoring |
 | **[imagepull](pkg/collector/imagepull/)** | Informer | Yes | Container image pull performance, slow pull detection, pull failure tracking |
@@ -378,6 +379,16 @@ sealos_database_connectivity{namespace="default",database="mysql1",type="mysql"}
 
 # Connection response time
 sealos_database_response_time_seconds{namespace="default",database="mysql1",type="mysql"} 0.089
+```
+
+### Namespace Collector Metrics
+
+```promql
+# Number of namespaces missing one or more configured labels
+sealos_namespace_missing_labels_count 2
+
+# Detail for each affected namespace; missing_labels is comma-separated
+sealos_namespace_missing_labels_info{namespace="team-a",missing_labels="sealos.io/owner"} 1
 ```
 
 ### LVM Collector Metrics

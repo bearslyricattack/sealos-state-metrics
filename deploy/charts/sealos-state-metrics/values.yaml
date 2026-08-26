@@ -127,11 +127,12 @@ leaderElection:
   retryPeriod: "2s"
 
 # Enabled collectors
-# Examples: [domain, registryproxy, node, imagepull, zombie, cloudbalance, lvm, database, cockroachlicense, crd]
+# Examples: [domain, registryproxy, node, namespace, imagepull, zombie, cloudbalance, lvm, database, cockroachlicense, crd]
 enabledCollectors:
   - domain
   # - registryproxy
   - node
+  # - namespace  # Enable after configuring collectors.namespace.requiredLabels
   - imagepull
   - zombie
   - lvm
@@ -184,6 +185,10 @@ collectors:
     checkInterval: "1m"
 
   node: {}
+
+  namespace:
+    # Namespaces missing one or more of these labels are reported.
+    requiredLabels: []
 
   imagepull:
     slowPullThreshold: "5m"

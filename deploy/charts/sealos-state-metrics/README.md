@@ -143,6 +143,12 @@ Notes:
 |-----------|-------------|---------|
 | `config.node.enabled` | Enable node collector | `true` |
 
+#### Namespace Collector
+
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `collectors.namespace.requiredLabels` | Labels expected on every namespace; namespaces missing one or more are reported | `[]` |
+
 #### Pod Collector
 
 | Parameter | Description | Default |

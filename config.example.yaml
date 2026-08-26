@@ -70,11 +70,12 @@ performance:
   informerResyncPeriod: "10m"
 
 # List of enabled collectors
-# Available collectors: domain, registryproxy, node, pod, imagepull, zombie, cloudbalance, database, cockroachlicense, billing
+# Available collectors: domain, registryproxy, node, namespace, pod, imagepull, zombie, cloudbalance, database, cockroachlicense, billing
 enabledCollectors:
   - domain
   # - registryproxy  # Disabled by default
   - node
+  # - namespace      # Enable after configuring collectors.namespace.requiredLabels
   - pod
   - imagepull
   - zombie
@@ -200,6 +201,13 @@ collectors:
   node:
     # No configuration required
     # Automatically monitors all nodes in the cluster
+
+  # Namespace collector - reports namespaces missing required labels
+  namespace:
+    # A namespace is reported when it is missing one or more of these labels.
+    requiredLabels: []
+      # - sealos.io/account
+      # - sealos.io/owner
 
   # Pod collector - monitors container restarts
   pod:
