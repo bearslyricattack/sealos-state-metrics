@@ -37,7 +37,9 @@ func NewCollector(factoryCtx *collector.FactoryContext) (collector.Collector, er
 	}
 
 	cfg.RequiredLabels = normalizeLabels(cfg.RequiredLabels)
+
 	cfg.Whitelist = normalizeLabels(cfg.Whitelist)
+
 	if err := validateRequiredLabels(cfg.RequiredLabels); err != nil {
 		return nil, err
 	}
@@ -150,7 +152,11 @@ func makeNamespaceSet(namespaces []string) map[string]struct{} {
 func validateRequiredLabels(labels []string) error {
 	for _, label := range labels {
 		if problems := validation.IsQualifiedName(label); len(problems) > 0 {
-			return fmt.Errorf("invalid required namespace label %q: %s", label, strings.Join(problems, "; "))
+			return fmt.Errorf(
+				"invalid required namespace label %q: %s",
+				label,
+				strings.Join(problems, "; "),
+			)
 		}
 	}
 
@@ -200,11 +206,13 @@ func (c *Collector) storeNamespace(namespace *corev1.Namespace) {
 	}
 
 	c.mu.Lock()
+
 	if c.isWhitelisted(namespace.Name) {
 		delete(c.namespaces, namespace.Name)
 		c.mu.Unlock()
 		return
 	}
+
 	c.namespaces[namespace.Name] = namespace.DeepCopy()
 	c.mu.Unlock()
 }

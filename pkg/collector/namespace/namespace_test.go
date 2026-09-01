@@ -2,7 +2,6 @@
 package namespace
 
 import (
-	"context"
 	"testing"
 	"time"
 
@@ -43,6 +42,7 @@ func TestMakeNamespaceSet(t *testing.T) {
 	if _, ok := set["kube-system"]; !ok {
 		t.Fatal("makeNamespaceSet() did not include kube-system")
 	}
+
 	if len(set) != 2 {
 		t.Fatalf("makeNamespaceSet() length = %d, want 2", len(set))
 	}
@@ -126,6 +126,7 @@ func TestCollectEmitsCountAndNamespaceDetails(t *testing.T) {
 			for _, label := range pb.GetLabel() {
 				labels[label.GetName()] = label.GetValue()
 			}
+
 			details[labels["namespace"]] = labels["missing_labels"]
 		}
 	}
@@ -162,14 +163,17 @@ func TestNamespaceDeleteRemovesMetrics(t *testing.T) {
 
 	namespace := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "temporary"}}
 	c.handleNamespaceAdd(namespace)
+
 	if got := collectCount(t, c); got != 1 {
 		t.Fatalf("count after add = %v, want 1", got)
 	}
 
 	c.handleNamespaceDelete(cache.DeletedFinalStateUnknown{Key: "temporary", Obj: namespace})
+
 	if got := collectCount(t, c); got != 0 {
 		t.Fatalf("count after delete = %v, want 0", got)
 	}
+
 	if got := collectCreatedTotal(t, c); got != 1 {
 		t.Fatalf("created total after delete = %v, want 1", got)
 	}
@@ -186,6 +190,7 @@ func TestNamespaceCreationCounterOnlyCountsDangerousAdds(t *testing.T) {
 
 	dangerous := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "dangerous"}}
 	c.handleNamespaceAdd(dangerous)
+
 	if got := collectCreatedTotal(t, c); got != 1 {
 		t.Fatalf("created total after dangerous add = %v, want 1", got)
 	}
@@ -195,6 +200,7 @@ func TestNamespaceCreationCounterOnlyCountsDangerousAdds(t *testing.T) {
 	c.handleNamespaceUpdate(dangerous, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{
 		Name: "dangerous", Labels: map[string]string{"owner": "alice"},
 	}})
+
 	if got := collectCreatedTotal(t, c); got != 1 {
 		t.Fatalf("created total after update = %v, want 1", got)
 	}
@@ -202,6 +208,7 @@ func TestNamespaceCreationCounterOnlyCountsDangerousAdds(t *testing.T) {
 	c.handleNamespaceAdd(&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{
 		Name: "complete", Labels: map[string]string{"team": "platform"},
 	}})
+
 	if got := collectCreatedTotal(t, c); got != 1 {
 		t.Fatalf("created total after complete add = %v, want 1", got)
 	}
@@ -218,9 +225,11 @@ func TestNamespaceWhitelistExcludesAllMetrics(t *testing.T) {
 	c.initMetrics("sealos")
 
 	c.handleNamespaceAdd(&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "ignored"}})
+
 	if got := collectCount(t, c); got != 0 {
 		t.Fatalf("count after whitelisted add = %v, want 0", got)
 	}
+
 	if got := collectCreatedTotal(t, c); got != 0 {
 		t.Fatalf("created total after whitelisted add = %v, want 0", got)
 	}
@@ -228,14 +237,17 @@ func TestNamespaceWhitelistExcludesAllMetrics(t *testing.T) {
 	// A pre-existing entry must also be filtered when collecting. This keeps
 	// the whitelist behavior correct if configuration is assembled manually.
 	c.namespaces["ignored"] = &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "ignored"}}
+
 	if got := collectCount(t, c); got != 0 {
 		t.Fatalf("count with whitelisted cache entry = %v, want 0", got)
 	}
 
 	c.handleNamespaceAdd(&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "tracked"}})
+
 	if got := collectCount(t, c); got != 1 {
 		t.Fatalf("count after non-whitelisted add = %v, want 1", got)
 	}
+
 	if got := collectCreatedTotal(t, c); got != 1 {
 		t.Fatalf("created total after non-whitelisted add = %v, want 1", got)
 	}
@@ -252,25 +264,31 @@ collectors:
 		MetricsNamespace:     "sealos",
 		InformerResyncPeriod: time.Minute,
 		Logger:               log.NewEntry(log.New()),
-		ClientProvider:       staticClientProvider{client: fake.NewSimpleClientset()},
+		ClientProvider:       staticClientProvider{client: fake.NewClientset()},
 	})
 	if err != nil {
 		t.Fatalf("NewCollector() error = %v", err)
 	}
 
-	c := created.(*Collector)
+	c, ok := created.(*Collector)
+	if !ok {
+		t.Fatalf("NewCollector() returned %T, want *Collector", created)
+	}
+
 	if len(c.config.Whitelist) != 2 {
 		t.Fatalf("normalized whitelist = %#v, want two entries", c.config.Whitelist)
 	}
+
 	if !c.isWhitelisted("kube-system") || !c.isWhitelisted("default") {
 		t.Fatalf("whitelist set = %#v, want kube-system and default", c.whitelist)
 	}
 }
 
 func TestRestartDropsNamespacesDeletedWhileStopped(t *testing.T) {
-	client := fake.NewSimpleClientset(&corev1.Namespace{
+	client := fake.NewClientset(&corev1.Namespace{
 		ObjectMeta: metav1.ObjectMeta{Name: "temporary"},
 	})
+
 	created, err := NewCollector(&collectorpkg.FactoryContext{
 		ConfigLoader: configpkg.NewModuleConfigLoader([]byte(`
 collectors:
@@ -286,23 +304,28 @@ collectors:
 		t.Fatalf("NewCollector() error = %v", err)
 	}
 
-	c := created.(*Collector)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	c, ok := created.(*Collector)
+	if !ok {
+		t.Fatalf("NewCollector() returned %T, want *Collector", created)
+	}
+
+	ctx := t.Context()
 
 	if err := c.Start(ctx); err != nil {
 		t.Fatalf("first Start() error = %v", err)
 	}
+
 	if got := collectCount(t, c); got != 1 {
 		t.Fatalf("count before stop = %v, want 1", got)
 	}
+
 	if err := c.Stop(); err != nil {
 		t.Fatalf("first Stop() error = %v", err)
 	}
 
-	if err := client.CoreV1().Namespaces().Delete(ctx, "temporary", metav1.DeleteOptions{}); err != nil &&
-		!errors.IsNotFound(err) {
-		t.Fatalf("Delete() error = %v", err)
+	deleteErr := client.CoreV1().Namespaces().Delete(ctx, "temporary", metav1.DeleteOptions{})
+	if deleteErr != nil && !errors.IsNotFound(deleteErr) {
+		t.Fatalf("Delete() error = %v", deleteErr)
 	}
 
 	if err := c.Start(ctx); err != nil {
