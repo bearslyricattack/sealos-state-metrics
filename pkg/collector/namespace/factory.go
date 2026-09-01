@@ -37,6 +37,7 @@ func NewCollector(factoryCtx *collector.FactoryContext) (collector.Collector, er
 	}
 
 	cfg.RequiredLabels = normalizeLabels(cfg.RequiredLabels)
+	cfg.Whitelist = normalizeLabels(cfg.Whitelist)
 	if err := validateRequiredLabels(cfg.RequiredLabels); err != nil {
 		return nil, err
 	}
@@ -49,6 +50,7 @@ func NewCollector(factoryCtx *collector.FactoryContext) (collector.Collector, er
 		),
 		client:     client,
 		config:     cfg,
+		whitelist:  makeNamespaceSet(cfg.Whitelist),
 		namespaces: make(map[string]*corev1.Namespace),
 		stopCh:     make(chan struct{}),
 		logger:     factoryCtx.Logger,
@@ -136,6 +138,15 @@ func normalizeLabels(labels []string) []string {
 	return result
 }
 
+func makeNamespaceSet(namespaces []string) map[string]struct{} {
+	set := make(map[string]struct{}, len(namespaces))
+	for _, namespace := range namespaces {
+		set[namespace] = struct{}{}
+	}
+
+	return set
+}
+
 func validateRequiredLabels(labels []string) error {
 	for _, label := range labels {
 		if problems := validation.IsQualifiedName(label); len(problems) > 0 {
@@ -159,6 +170,15 @@ func (c *Collector) handleNamespaceAdd(obj any) {
 		return
 	}
 
+	if c.isWhitelisted(namespace.Name) {
+		c.logger.WithField("namespace", namespace.Name).Debug("Namespace is whitelisted")
+		return
+	}
+
+	if len(c.missingLabels(namespace)) > 0 {
+		c.dangerousNamespaceCreationCount.Add(1)
+	}
+
 	c.storeNamespace(namespace)
 	c.logger.WithField("namespace", namespace.Name).Debug("Namespace added")
 }
@@ -180,8 +200,18 @@ func (c *Collector) storeNamespace(namespace *corev1.Namespace) {
 	}
 
 	c.mu.Lock()
+	if c.isWhitelisted(namespace.Name) {
+		delete(c.namespaces, namespace.Name)
+		c.mu.Unlock()
+		return
+	}
 	c.namespaces[namespace.Name] = namespace.DeepCopy()
 	c.mu.Unlock()
+}
+
+func (c *Collector) isWhitelisted(name string) bool {
+	_, ok := c.whitelist[name]
+	return ok
 }
 
 func (c *Collector) handleNamespaceDelete(obj any) {

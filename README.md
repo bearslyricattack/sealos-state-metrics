@@ -389,6 +389,9 @@ sealos_namespace_missing_labels_count 2
 
 # Detail for each affected namespace; missing_labels is comma-separated
 sealos_namespace_missing_labels_info{namespace="team-a",missing_labels="sealos.io/owner"} 1
+
+# Total namespace Add events missing one or more configured labels
+sealos_namespace_missing_labels_created_total 3
 ```
 
 ### LVM Collector Metrics

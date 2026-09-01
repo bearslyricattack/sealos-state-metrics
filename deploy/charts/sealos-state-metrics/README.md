@@ -148,6 +148,7 @@ Notes:
 | Parameter | Description | Default |
 |-----------|-------------|---------|
 | `collectors.namespace.requiredLabels` | Labels expected on every namespace; namespaces missing one or more are reported | `[]` |
+| `collectors.namespace.whitelist` | Namespace names excluded from current and creation metrics | `[]` |
 
 #### Pod Collector
 

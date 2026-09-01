@@ -7,11 +7,14 @@ package namespace
 // collector.
 type Config struct {
 	RequiredLabels []string `yaml:"requiredLabels" env:"REQUIRED_LABELS" envSeparator:","`
+	// Whitelist lists namespaces that are excluded from both current missing
+	// label metrics and the missing-label creation counter.
+	Whitelist []string `yaml:"whitelist" env:"WHITELIST" envSeparator:","`
 }
 
 // NewDefaultConfig returns the default configuration for the Namespace
 // collector. With no required labels configured, the collector remains
 // active but reports a zero count.
 func NewDefaultConfig() *Config {
-	return &Config{RequiredLabels: []string{}}
+	return &Config{RequiredLabels: []string{}, Whitelist: []string{}}
 }

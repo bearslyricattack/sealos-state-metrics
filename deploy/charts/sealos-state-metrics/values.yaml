@@ -189,6 +189,8 @@ collectors:
   namespace:
     # Namespaces missing one or more of these labels are reported.
     requiredLabels: []
+    # Namespaces in this list are excluded from all namespace metrics.
+    whitelist: []
 
   imagepull:
     slowPullThreshold: "5m"

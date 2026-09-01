@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/labring/sealos-state-metrics/pkg/collector/base"
 	"github.com/prometheus/client_golang/prometheus"
@@ -26,10 +27,18 @@ type Collector struct {
 
 	mu         sync.RWMutex
 	namespaces map[string]*corev1.Namespace
+	whitelist  map[string]struct{}
+
+	// dangerousNamespaceCreationCount counts Add events for namespaces that
+	// were created without all required labels. It is intentionally retained
+	// across collector restarts so a temporary scrape window does not hide an
+	// observed creation.
+	dangerousNamespaceCreationCount atomic.Uint64
 
 	// Metrics
-	missingLabelsCount *prometheus.Desc
-	missingLabelsInfo  *prometheus.Desc
+	missingLabelsCount        *prometheus.Desc
+	missingLabelsInfo         *prometheus.Desc
+	missingLabelsCreatedTotal *prometheus.Desc
 }
 
 // initMetrics initializes Prometheus metric descriptors.
@@ -46,9 +55,16 @@ func (c *Collector) initMetrics(namespace string) {
 		[]string{"namespace", "missing_labels"},
 		nil,
 	)
+	c.missingLabelsCreatedTotal = prometheus.NewDesc(
+		prometheus.BuildFQName(namespace, "namespace", "missing_labels_created_total"),
+		"Total number of namespace creation events missing one or more required labels",
+		nil,
+		nil,
+	)
 
 	c.MustRegisterDesc(c.missingLabelsCount)
 	c.MustRegisterDesc(c.missingLabelsInfo)
+	c.MustRegisterDesc(c.missingLabelsCreatedTotal)
 }
 
 // HasSynced returns true if the namespace informer has synced.
@@ -73,6 +89,10 @@ func (c *Collector) collect(ch chan<- prometheus.Metric) {
 
 	missingCount := 0
 	for _, name := range names {
+		if c.isWhitelisted(name) {
+			continue
+		}
+
 		missingLabels := c.missingLabels(namespaces[name])
 		if len(missingLabels) == 0 {
 			continue
@@ -93,6 +113,12 @@ func (c *Collector) collect(ch chan<- prometheus.Metric) {
 		c.missingLabelsCount,
 		prometheus.GaugeValue,
 		float64(missingCount),
+	)
+
+	ch <- prometheus.MustNewConstMetric(
+		c.missingLabelsCreatedTotal,
+		prometheus.CounterValue,
+		float64(c.dangerousNamespaceCreationCount.Load()),
 	)
 }
 

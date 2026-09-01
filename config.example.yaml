@@ -208,6 +208,10 @@ collectors:
     requiredLabels: []
       # - sealos.io/account
       # - sealos.io/owner
+    # Namespaces in this list are excluded from all namespace metrics.
+    whitelist: []
+      # - kube-system
+      # - sealos-system
 
   # Pod collector - monitors container restarts
   pod:
