@@ -35,10 +35,15 @@ type Collector struct {
 	// observed creation.
 	dangerousNamespaceCreationCount atomic.Uint64
 
+	// requiredLabelChangeCount counts Update events where one or more required
+	// labels changed on a non-whitelisted namespace.
+	requiredLabelChangeCount atomic.Uint64
+
 	// Metrics
 	missingLabelsCount        *prometheus.Desc
 	missingLabelsInfo         *prometheus.Desc
 	missingLabelsCreatedTotal *prometheus.Desc
+	missingLabelsChangedTotal *prometheus.Desc
 }
 
 // initMetrics initializes Prometheus metric descriptors.
@@ -61,10 +66,17 @@ func (c *Collector) initMetrics(namespace string) {
 		nil,
 		nil,
 	)
+	c.missingLabelsChangedTotal = prometheus.NewDesc(
+		prometheus.BuildFQName(namespace, "namespace", "missing_labels_changed_total"),
+		"Total number of namespace update events changing one or more required labels",
+		nil,
+		nil,
+	)
 
 	c.MustRegisterDesc(c.missingLabelsCount)
 	c.MustRegisterDesc(c.missingLabelsInfo)
 	c.MustRegisterDesc(c.missingLabelsCreatedTotal)
+	c.MustRegisterDesc(c.missingLabelsChangedTotal)
 }
 
 // HasSynced returns true if the namespace informer has synced.
@@ -119,6 +131,12 @@ func (c *Collector) collect(ch chan<- prometheus.Metric) {
 		c.missingLabelsCreatedTotal,
 		prometheus.CounterValue,
 		float64(c.dangerousNamespaceCreationCount.Load()),
+	)
+
+	ch <- prometheus.MustNewConstMetric(
+		c.missingLabelsChangedTotal,
+		prometheus.CounterValue,
+		float64(c.requiredLabelChangeCount.Load()),
 	)
 }
 

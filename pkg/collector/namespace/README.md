@@ -30,17 +30,23 @@ Assuming the global metrics namespace is `sealos`, the collector exports:
 | `sealos_namespace_missing_labels_count` | Number of namespaces missing at least one required label | none |
 | `sealos_namespace_missing_labels_info` | One sample for every namespace missing labels (value is always `1`) | `namespace`, `missing_labels` |
 | `sealos_namespace_missing_labels_created_total` | Total namespace Add events that were missing at least one required label | none |
+| `sealos_namespace_missing_labels_changed_total` | Total namespace Update events that changed one or more required labels | none |
 
 `missing_labels` is a comma-separated list of the configured labels absent from
 that namespace. A label with an empty value is considered present; only label
 presence is checked. With no required labels configured, the collector emits a
-zero count, no detail samples, and a zero creation counter. The creation counter
-is incremented when the informer receives an Add event for a non-whitelisted
+zero count, no detail samples, and zero event counters. The creation counter is
+incremented when the informer receives an Add event for a non-whitelisted
 namespace missing one or more labels; updates and deletes do not change it.
 The initial informer list is also represented as Add events, so already-existing
 dangerous namespaces are not missed when monitoring starts. The counter is
 process-local and resets after a process restart, as with other Prometheus
 counters.
+
+The change counter is incremented when an Update event changes the presence or
+value of at least one required label. Updates to other labels, metadata-only
+updates, and deletes do not change it. Both adding and removing a required label
+are counted as changes.
 
 To detect a newly observed dangerous namespace even when it is deleted before a
 scrape, use a range query such as:

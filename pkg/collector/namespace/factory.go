@@ -189,15 +189,38 @@ func (c *Collector) handleNamespaceAdd(obj any) {
 	c.logger.WithField("namespace", namespace.Name).Debug("Namespace added")
 }
 
-func (c *Collector) handleNamespaceUpdate(_, newObj any) {
+func (c *Collector) handleNamespaceUpdate(oldObj, newObj any) {
 	namespace, ok := newObj.(*corev1.Namespace)
 	if !ok {
 		c.logger.WithField("object", newObj).Error("Failed to cast object to Namespace")
 		return
 	}
 
+	oldNamespace, ok := oldObj.(*corev1.Namespace)
+	if ok && !c.isWhitelisted(namespace.Name) && c.requiredLabelsChanged(oldNamespace, namespace) {
+		c.requiredLabelChangeCount.Add(1)
+	}
+
 	c.storeNamespace(namespace)
 	c.logger.WithField("namespace", namespace.Name).Debug("Namespace updated")
+}
+
+// requiredLabelsChanged reports whether any configured required label changed
+// in presence or value between two namespace versions.
+func (c *Collector) requiredLabelsChanged(oldNamespace, newNamespace *corev1.Namespace) bool {
+	if oldNamespace == nil || newNamespace == nil || c.config == nil {
+		return false
+	}
+
+	for _, label := range c.config.RequiredLabels {
+		oldValue, oldPresent := oldNamespace.Labels[label]
+		newValue, newPresent := newNamespace.Labels[label]
+		if oldPresent != newPresent || oldValue != newValue {
+			return true
+		}
+	}
+
+	return false
 }
 
 func (c *Collector) storeNamespace(namespace *corev1.Namespace) {

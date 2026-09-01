@@ -214,6 +214,110 @@ func TestNamespaceCreationCounterOnlyCountsDangerousAdds(t *testing.T) {
 	}
 }
 
+func TestNamespaceLabelChangeCounterTracksRequiredLabelUpdates(t *testing.T) {
+	c := &Collector{
+		BaseCollector: base.NewBaseCollector("namespace", log.NewEntry(log.New())),
+		config:        &Config{RequiredLabels: []string{"team", "owner"}},
+		namespaces:    make(map[string]*corev1.Namespace),
+		logger:        log.NewEntry(log.New()),
+	}
+	c.initMetrics("sealos")
+
+	oldNamespace := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{
+		Name:   "demo",
+		Labels: map[string]string{"team": "platform", "unrelated": "before"},
+	}}
+	c.handleNamespaceAdd(oldNamespace)
+
+	if got := collectChangedTotal(t, c); got != 0 {
+		t.Fatalf("changed total after add = %v, want 0", got)
+	}
+
+	// A required label value change is one event, even when the namespace is
+	// still missing another required label.
+	newNamespace := oldNamespace.DeepCopy()
+	newNamespace.Labels["team"] = "engineering"
+	c.handleNamespaceUpdate(oldNamespace, newNamespace)
+
+	if got := collectChangedTotal(t, c); got != 1 {
+		t.Fatalf("changed total after required label value change = %v, want 1", got)
+	}
+
+	// Changes to an unmonitored label do not count.
+	oldNamespace = newNamespace
+	newNamespace = oldNamespace.DeepCopy()
+	newNamespace.Labels["unrelated"] = "after"
+	c.handleNamespaceUpdate(oldNamespace, newNamespace)
+
+	if got := collectChangedTotal(t, c); got != 1 {
+		t.Fatalf("changed total after unrelated label change = %v, want 1", got)
+	}
+
+	// Adding and removing required labels are also changes.
+	oldNamespace = newNamespace
+	newNamespace = oldNamespace.DeepCopy()
+	newNamespace.Labels["owner"] = "alice"
+	c.handleNamespaceUpdate(oldNamespace, newNamespace)
+
+	if got := collectChangedTotal(t, c); got != 2 {
+		t.Fatalf("changed total after required label add = %v, want 2", got)
+	}
+
+	oldNamespace = newNamespace
+	newNamespace = oldNamespace.DeepCopy()
+	delete(newNamespace.Labels, "team")
+	c.handleNamespaceUpdate(oldNamespace, newNamespace)
+
+	if got := collectChangedTotal(t, c); got != 3 {
+		t.Fatalf("changed total after required label removal = %v, want 3", got)
+	}
+
+	// Metadata-only and no-op updates do not count.
+	oldNamespace = newNamespace
+	newNamespace = oldNamespace.DeepCopy()
+	newNamespace.ResourceVersion = "2"
+	c.handleNamespaceUpdate(oldNamespace, newNamespace)
+
+	if got := collectChangedTotal(t, c); got != 3 {
+		t.Fatalf("changed total after metadata-only update = %v, want 3", got)
+	}
+
+	c.handleNamespaceUpdate(newNamespace, newNamespace.DeepCopy())
+
+	if got := collectChangedTotal(t, c); got != 3 {
+		t.Fatalf("changed total after no-op update = %v, want 3", got)
+	}
+
+	c.handleNamespaceDelete(newNamespace)
+
+	if got := collectChangedTotal(t, c); got != 3 {
+		t.Fatalf("changed total after delete = %v, want 3", got)
+	}
+}
+
+func TestNamespaceLabelChangeCounterSkipsWhitelistedNamespaces(t *testing.T) {
+	c := &Collector{
+		BaseCollector: base.NewBaseCollector("namespace", log.NewEntry(log.New())),
+		config:        &Config{RequiredLabels: []string{"team"}},
+		whitelist:     makeNamespaceSet([]string{"ignored"}),
+		namespaces:    make(map[string]*corev1.Namespace),
+		logger:        log.NewEntry(log.New()),
+	}
+	c.initMetrics("sealos")
+
+	oldNamespace := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{
+		Name:   "ignored",
+		Labels: map[string]string{"team": "platform"},
+	}}
+	newNamespace := oldNamespace.DeepCopy()
+	newNamespace.Labels["team"] = "engineering"
+	c.handleNamespaceUpdate(oldNamespace, newNamespace)
+
+	if got := collectChangedTotal(t, c); got != 0 {
+		t.Fatalf("changed total after whitelisted update = %v, want 0", got)
+	}
+}
+
 func TestNamespaceWhitelistExcludesAllMetrics(t *testing.T) {
 	c := &Collector{
 		BaseCollector: base.NewBaseCollector("namespace", log.NewEntry(log.New())),
@@ -381,6 +485,14 @@ func collectCount(t *testing.T, c *Collector) float64 {
 }
 
 func collectCreatedTotal(t *testing.T, c *Collector) float64 {
+	return collectCounterValue(t, c, c.missingLabelsCreatedTotal, "created total")
+}
+
+func collectChangedTotal(t *testing.T, c *Collector) float64 {
+	return collectCounterValue(t, c, c.missingLabelsChangedTotal, "changed total")
+}
+
+func collectCounterValue(t *testing.T, c *Collector, target *prometheus.Desc, name string) float64 {
 	t.Helper()
 
 	ch := make(chan prometheus.Metric, 8)
@@ -394,13 +506,13 @@ func collectCreatedTotal(t *testing.T, c *Collector) float64 {
 			t.Fatalf("metric.Write() error = %v", err)
 		}
 
-		if len(pb.GetLabel()) == 0 && pb.GetCounter() != nil {
+		if metric.Desc() == target && len(pb.GetLabel()) == 0 && pb.GetCounter() != nil {
 			values = append(values, pb.GetCounter().GetValue())
 		}
 	}
 
 	if len(values) != 1 {
-		t.Fatalf("created total metrics = %d, want 1", len(values))
+		t.Fatalf("%s metrics = %d, want 1", name, len(values))
 	}
 
 	return values[0]
