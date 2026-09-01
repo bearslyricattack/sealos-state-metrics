@@ -12045,7 +12045,7 @@
           },
           "gridPos": {
             "h": 4,
-            "w": 6,
+            "w": 4,
             "x": 0,
             "y": 100
           },
@@ -12111,8 +12111,8 @@
           },
           "gridPos": {
             "h": 4,
-            "w": 6,
-            "x": 6,
+            "w": 4,
+            "x": 4,
             "y": 100
           },
           "id": 1202,
@@ -12144,6 +12144,72 @@
             }
           ],
           "title": "危险 Namespace 创建数",
+          "type": "stat"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "description": "进程启动后观测到的 required label 变更事件累计数",
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "red",
+                    "value": 1
+                  }
+                ]
+              },
+              "unit": "short"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 4,
+            "w": 4,
+            "x": 8,
+            "y": 100
+          },
+          "id": 1204,
+          "options": {
+            "colorMode": "value",
+            "graphMode": "none",
+            "justifyMode": "auto",
+            "orientation": "auto",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "showPercentChange": false,
+            "textMode": "auto",
+            "wideLayout": true
+          },
+          "pluginVersion": "11.3.9",
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${DS_PROMETHEUS}"
+              },
+              "expr": "sealos_namespace_missing_labels_changed_total",
+              "refId": "A"
+            }
+          ],
+          "title": "Namespace 标签变更数",
           "type": "stat"
         },
         {
@@ -12425,6 +12491,6 @@
   "timezone": "",
   "title": "Sealos State Metrics - 完整监控面板",
   "uid": "sealos-state-metrics",
-  "version": 14,
+  "version": 15,
   "weekStart": ""
 }
