@@ -12217,6 +12217,62 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
+          "description": "显示所选时间范围内新增或变更 required label 的 Namespace。每行对应一个 Namespace 和事件类型，数量通过 increase() 计算。",
+          "fieldConfig": {
+            "defaults": {
+              "custom": {
+                "align": "auto",
+                "cellOptions": {
+                  "type": "auto"
+                },
+                "inspect": false
+              },
+              "mappings": [],
+              "unit": "short"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 104
+          },
+          "id": 1205,
+          "options": {
+            "cellHeight": "sm",
+            "footer": {
+              "countRows": false,
+              "fields": "",
+              "reducer": [
+                "sum"
+              ],
+              "show": false
+            },
+            "showHeader": true
+          },
+          "pluginVersion": "11.3.9",
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${DS_PROMETHEUS}"
+              },
+              "editorMode": "code",
+              "expr": "(label_replace(increase(sealos_namespace_missing_labels_created_by_namespace_total[$__range]), \"event_type\", \"created\", \"namespace\", \".*\") or label_replace(increase(sealos_namespace_missing_labels_updated_by_namespace_total[$__range]), \"event_type\", \"updated\", \"namespace\", \".*\")) > 0",
+              "format": "table",
+              "instant": true,
+              "refId": "A"
+            }
+          ],
+          "title": "Namespace 标签事件明细（时间范围内）",
+          "type": "table"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
           "description": "每个缺少必需标签的 Namespace 及其缺失标签",
           "fieldConfig": {
             "defaults": {
@@ -12491,6 +12547,6 @@
   "timezone": "",
   "title": "Sealos State Metrics - 完整监控面板",
   "uid": "sealos-state-metrics",
-  "version": 15,
+  "version": 16,
   "weekStart": ""
 }

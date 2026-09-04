@@ -395,6 +395,12 @@ sealos_namespace_missing_labels_created_total 3
 
 # Total namespace Update events changing one or more configured labels
 sealos_namespace_missing_labels_changed_total 3
+
+# Total dangerous Namespace Add events, grouped by Namespace
+sealos_namespace_missing_labels_created_by_namespace_total{namespace="team-a"} 1
+
+# Total required-label Update events, grouped by Namespace
+sealos_namespace_missing_labels_updated_by_namespace_total{namespace="team-a"} 2
 ```
 
 ### LVM Collector Metrics

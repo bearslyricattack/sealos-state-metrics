@@ -50,12 +50,13 @@ func NewCollector(factoryCtx *collector.FactoryContext) (collector.Collector, er
 			factoryCtx.Logger,
 			base.WithWaitReadyOnCollect(true),
 		),
-		client:     client,
-		config:     cfg,
-		whitelist:  makeNamespaceSet(cfg.Whitelist),
-		namespaces: make(map[string]*corev1.Namespace),
-		stopCh:     make(chan struct{}),
-		logger:     factoryCtx.Logger,
+		client:                 client,
+		config:                 cfg,
+		whitelist:              makeNamespaceSet(cfg.Whitelist),
+		namespaces:             make(map[string]*corev1.Namespace),
+		namespaceEventCounters: make(map[string]*namespaceEventCounter),
+		stopCh:                 make(chan struct{}),
+		logger:                 factoryCtx.Logger,
 	}
 
 	c.initMetrics(factoryCtx.MetricsNamespace)
@@ -183,6 +184,7 @@ func (c *Collector) handleNamespaceAdd(obj any) {
 
 	if len(c.missingLabels(namespace)) > 0 {
 		c.dangerousNamespaceCreationCount.Add(1)
+		c.namespaceEventCounter(namespace.Name).created.Add(1)
 	}
 
 	c.storeNamespace(namespace)
@@ -199,6 +201,7 @@ func (c *Collector) handleNamespaceUpdate(oldObj, newObj any) {
 	oldNamespace, ok := oldObj.(*corev1.Namespace)
 	if ok && !c.isWhitelisted(namespace.Name) && c.requiredLabelsChanged(oldNamespace, namespace) {
 		c.requiredLabelChangeCount.Add(1)
+		c.namespaceEventCounter(namespace.Name).updated.Add(1)
 	}
 
 	c.storeNamespace(namespace)
@@ -221,6 +224,23 @@ func (c *Collector) requiredLabelsChanged(oldNamespace, newNamespace *corev1.Nam
 	}
 
 	return false
+}
+
+func (c *Collector) namespaceEventCounter(name string) *namespaceEventCounter {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.namespaceEventCounters == nil {
+		c.namespaceEventCounters = make(map[string]*namespaceEventCounter)
+	}
+
+	eventCounter, ok := c.namespaceEventCounters[name]
+	if !ok {
+		eventCounter = &namespaceEventCounter{}
+		c.namespaceEventCounters[name] = eventCounter
+	}
+
+	return eventCounter
 }
 
 func (c *Collector) storeNamespace(namespace *corev1.Namespace) {

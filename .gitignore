@@ -6,3 +6,12 @@
 **/*.local.*
 /sealos-state-metrics
 /sealos-state-metrics.*
+/.idea/go.imports.xml
+/.idea/golinter.xml
+/.tools/bin/kubebuilder
+/config-controller/bin/kustomize
+/config-controller/bin/kustomize-v5.8.1
+/.idea/workspace.xml
+/.idea/vcs.xml
+/.idea/sealos-state-metrics.iml
+/.idea/inspectionProfiles/Project_Default.xml

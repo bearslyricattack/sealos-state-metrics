@@ -2,6 +2,7 @@
 package namespace
 
 import (
+	"reflect"
 	"testing"
 	"time"
 
@@ -316,6 +317,56 @@ func TestNamespaceLabelChangeCounterSkipsWhitelistedNamespaces(t *testing.T) {
 	if got := collectChangedTotal(t, c); got != 0 {
 		t.Fatalf("changed total after whitelisted update = %v, want 0", got)
 	}
+
+	if got := collectNamespaceCounterValues(t, c, c.missingLabelsCreatedByNamespaceTotal); len(got) != 0 {
+		t.Fatalf("created-by-namespace metrics after whitelisted update = %#v, want none", got)
+	}
+
+	if got := collectNamespaceCounterValues(t, c, c.missingLabelsUpdatedByNamespaceTotal); len(got) != 0 {
+		t.Fatalf("updated-by-namespace metrics after whitelisted update = %#v, want none", got)
+	}
+}
+
+func TestNamespaceEventCountersTrackEventsByNamespace(t *testing.T) {
+	c := &Collector{
+		BaseCollector: base.NewBaseCollector("namespace", log.NewEntry(log.New())),
+		config:        &Config{RequiredLabels: []string{"team", "owner"}},
+		namespaces:    make(map[string]*corev1.Namespace),
+		logger:        log.NewEntry(log.New()),
+	}
+	c.initMetrics("sealos")
+
+	dangerous := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "dangerous"}}
+	c.handleNamespaceAdd(dangerous)
+
+	complete := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{
+		Name:   "complete",
+		Labels: map[string]string{"team": "platform", "owner": "alice"},
+	}}
+	c.handleNamespaceAdd(complete)
+
+	updated := dangerous.DeepCopy()
+	updated.Labels = map[string]string{"team": "platform"}
+	c.handleNamespaceUpdate(dangerous, updated)
+
+	// Non-required label updates do not create an update event sample.
+	unchangedRequiredLabels := updated.DeepCopy()
+	unchangedRequiredLabels.Labels["unrelated"] = "value"
+	c.handleNamespaceUpdate(updated, unchangedRequiredLabels)
+
+	secondDangerous := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "second-dangerous"}}
+	c.handleNamespaceAdd(secondDangerous)
+	c.handleNamespaceDelete(dangerous)
+
+	created := collectNamespaceCounterValues(t, c, c.missingLabelsCreatedByNamespaceTotal)
+	if want := map[string]float64{"dangerous": 1, "second-dangerous": 1}; !reflect.DeepEqual(created, want) {
+		t.Fatalf("created-by-namespace metrics = %#v, want %#v", created, want)
+	}
+
+	updatedByNamespace := collectNamespaceCounterValues(t, c, c.missingLabelsUpdatedByNamespaceTotal)
+	if want := map[string]float64{"dangerous": 1, "second-dangerous": 0}; !reflect.DeepEqual(updatedByNamespace, want) {
+		t.Fatalf("updated-by-namespace metrics = %#v, want %#v", updatedByNamespace, want)
+	}
 }
 
 func TestNamespaceWhitelistExcludesAllMetrics(t *testing.T) {
@@ -461,7 +512,7 @@ func (p staticClientProvider) GetClient() (kubernetes.Interface, error) {
 func collectCount(t *testing.T, c *Collector) float64 {
 	t.Helper()
 
-	ch := make(chan prometheus.Metric, 8)
+	ch := make(chan prometheus.Metric, 32)
 	c.collect(ch)
 	close(ch)
 
@@ -492,10 +543,38 @@ func collectChangedTotal(t *testing.T, c *Collector) float64 {
 	return collectCounterValue(t, c, c.missingLabelsChangedTotal, "changed total")
 }
 
+func collectNamespaceCounterValues(t *testing.T, c *Collector, target *prometheus.Desc) map[string]float64 {
+	t.Helper()
+
+	ch := make(chan prometheus.Metric, 32)
+	c.collect(ch)
+	close(ch)
+
+	values := make(map[string]float64)
+	for metric := range ch {
+		if metric.Desc() != target {
+			continue
+		}
+
+		pb := &dto.Metric{}
+		if err := metric.Write(pb); err != nil {
+			t.Fatalf("metric.Write() error = %v", err)
+		}
+
+		if pb.GetCounter() == nil || len(pb.GetLabel()) != 1 || pb.GetLabel()[0].GetName() != "namespace" {
+			t.Fatalf("unexpected namespace counter metric = %#v", pb)
+		}
+
+		values[pb.GetLabel()[0].GetValue()] = pb.GetCounter().GetValue()
+	}
+
+	return values
+}
+
 func collectCounterValue(t *testing.T, c *Collector, target *prometheus.Desc, name string) float64 {
 	t.Helper()
 
-	ch := make(chan prometheus.Metric, 8)
+	ch := make(chan prometheus.Metric, 32)
 	c.collect(ch)
 	close(ch)
 

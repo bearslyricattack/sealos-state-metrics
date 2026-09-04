@@ -15,6 +15,14 @@ import (
 	"k8s.io/client-go/tools/cache"
 )
 
+// namespaceEventCounter stores event totals for one namespace. The pointer is
+// retained after the namespace is deleted so a scrape can still observe a
+// recently recorded event through increase().
+type namespaceEventCounter struct {
+	created atomic.Uint64
+	updated atomic.Uint64
+}
+
 // Collector collects namespaces that are missing configured labels.
 type Collector struct {
 	*base.BaseCollector
@@ -39,11 +47,18 @@ type Collector struct {
 	// labels changed on a non-whitelisted namespace.
 	requiredLabelChangeCount atomic.Uint64
 
+	// namespaceEventCounters contains per-namespace event totals. It is not
+	// reset with the current namespace cache so event counters remain useful
+	// after a namespace is deleted and across collector restarts.
+	namespaceEventCounters map[string]*namespaceEventCounter
+
 	// Metrics
-	missingLabelsCount        *prometheus.Desc
-	missingLabelsInfo         *prometheus.Desc
-	missingLabelsCreatedTotal *prometheus.Desc
-	missingLabelsChangedTotal *prometheus.Desc
+	missingLabelsCount                   *prometheus.Desc
+	missingLabelsInfo                    *prometheus.Desc
+	missingLabelsCreatedTotal            *prometheus.Desc
+	missingLabelsChangedTotal            *prometheus.Desc
+	missingLabelsCreatedByNamespaceTotal *prometheus.Desc
+	missingLabelsUpdatedByNamespaceTotal *prometheus.Desc
 }
 
 // initMetrics initializes Prometheus metric descriptors.
@@ -72,11 +87,25 @@ func (c *Collector) initMetrics(namespace string) {
 		nil,
 		nil,
 	)
+	c.missingLabelsCreatedByNamespaceTotal = prometheus.NewDesc(
+		prometheus.BuildFQName(namespace, "namespace", "missing_labels_created_by_namespace_total"),
+		"Total number of namespace creation events missing required labels, by namespace",
+		[]string{"namespace"},
+		nil,
+	)
+	c.missingLabelsUpdatedByNamespaceTotal = prometheus.NewDesc(
+		prometheus.BuildFQName(namespace, "namespace", "missing_labels_updated_by_namespace_total"),
+		"Total number of namespace update events changing required labels, by namespace",
+		[]string{"namespace"},
+		nil,
+	)
 
 	c.MustRegisterDesc(c.missingLabelsCount)
 	c.MustRegisterDesc(c.missingLabelsInfo)
 	c.MustRegisterDesc(c.missingLabelsCreatedTotal)
 	c.MustRegisterDesc(c.missingLabelsChangedTotal)
+	c.MustRegisterDesc(c.missingLabelsCreatedByNamespaceTotal)
+	c.MustRegisterDesc(c.missingLabelsUpdatedByNamespaceTotal)
 }
 
 // HasSynced returns true if the namespace informer has synced.
@@ -90,6 +119,8 @@ func (c *Collector) collect(ch chan<- prometheus.Metric) {
 	c.mu.RLock()
 	namespaces := make(map[string]*corev1.Namespace, len(c.namespaces))
 	maps.Copy(namespaces, c.namespaces)
+	eventCounters := make(map[string]*namespaceEventCounter, len(c.namespaceEventCounters))
+	maps.Copy(eventCounters, c.namespaceEventCounters)
 	c.mu.RUnlock()
 
 	names := make([]string, 0, len(namespaces))
@@ -138,6 +169,31 @@ func (c *Collector) collect(ch chan<- prometheus.Metric) {
 		prometheus.CounterValue,
 		float64(c.requiredLabelChangeCount.Load()),
 	)
+
+	eventNames := make([]string, 0, len(eventCounters))
+	for name := range eventCounters {
+		if c.isWhitelisted(name) {
+			continue
+		}
+		eventNames = append(eventNames, name)
+	}
+	sort.Strings(eventNames)
+
+	for _, name := range eventNames {
+		eventCounter := eventCounters[name]
+		ch <- prometheus.MustNewConstMetric(
+			c.missingLabelsCreatedByNamespaceTotal,
+			prometheus.CounterValue,
+			float64(eventCounter.created.Load()),
+			name,
+		)
+		ch <- prometheus.MustNewConstMetric(
+			c.missingLabelsUpdatedByNamespaceTotal,
+			prometheus.CounterValue,
+			float64(eventCounter.updated.Load()),
+			name,
+		)
+	}
 }
 
 // missingLabels returns configured labels that are absent from a namespace.
